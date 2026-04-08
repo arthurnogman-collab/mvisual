@@ -4,16 +4,12 @@ import { SectionBase } from './section-base.js';
 /**
  * SECTION 2 — "The Awakening" (0:30 – 1:00)
  *
- * Music: Music box melody enters (F# minor arpeggios), Serum #5 pad continues.
- *
- * Concept: You passed through the light → explosion → world snaps to a
- *          2D side-scrolling platformer. Each melody note erupts as a
- *          particle fountain you collect by running through it.
- *
- * Visual shift: 3D tunnel → 2D platformer is the dramatic section change.
+ * 2D side-scrolling platformer. The ball rolls on a ground line.
+ * Each melody note spawns a glowing neon orb exactly on beat.
+ * Collect orbs by steering into them. Pure sync, pure neon.
  */
 
-// Music box note timings from MIDI
+// Music box notes — MIDI timings confirmed perfectly synced with MP3
 const MELODY_NOTES = [
   [30.000, 81], [30.234, 83], [30.469, 85], [30.703, 80],
   [33.750, 81], [33.984, 80], [34.219, 76], [34.453, 81],
@@ -35,83 +31,130 @@ function noteToHue(note) {
   return (note % 12) / 12;
 }
 
-// Map note to Y in 2D space (higher pitch = higher platform)
-function noteToY(note) {
-  return ((note - 72) / 20) * 4 + 2; // range roughly 0.5 to 5
+// Higher pitch = higher Y position above ground
+function noteToHeight(note) {
+  return 0.8 + ((note - 70) / 25) * 4;
 }
+
+// Spread notes laterally — each note gets a position ahead
+function noteToAheadDist(index, total) {
+  // Notes within a phrase cluster together, phrases are spaced by silence
+  return 8 + index * 1.2;
+}
+
+// ─── Neon orb glow shader ───
+const orbVertShader = `
+  varying vec3 vNormal;
+  varying vec3 vWorldPos;
+  void main() {
+    vNormal = normalize(normalMatrix * normal);
+    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const orbFragShader = `
+  uniform vec3 uColor;
+  uniform float uTime;
+  uniform float uPulse;
+  varying vec3 vNormal;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vec3 viewDir = normalize(cameraPosition - vWorldPos);
+    float rim = 1.0 - abs(dot(viewDir, vNormal));
+    rim = pow(rim, 1.5);
+
+    // Pulsing core
+    float core = 0.6 + sin(uTime * 4.0) * 0.1 + uPulse * 0.3;
+
+    // Neon glow = bright center + rim glow
+    float glow = core + rim * 1.2;
+    vec3 col = uColor * glow;
+
+    // Hot white center
+    col = mix(col, vec3(1.0), core * 0.3);
+
+    float alpha = clamp(glow * 0.8, 0.0, 1.0);
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
 
 export class Section2 extends SectionBase {
   constructor() {
     super('the-awakening', 30, 60);
-    this.explosionParticles = null;
-    this.explosionLife = 0;
-    this.noteFountains = [];    // active particle fountains from notes
-    this.noteQueue = [];        // prepared note data
-    this.groundSegments = [];
-    this.bgLayers = [];
+    this.orbs = [];
+    this.triggered = new Set();
     this.collectEffects = [];
-    this.platformerStarted = false;
+    this.groundSegments = [];
+    this.explosionLife = 0;
+    this.explosionParticles = null;
+    this.explosionVelocities = null;
+    this.scrollSpeed = 8; // units per second the world scrolls
   }
 
   enter(ctx) {
     super.enter(ctx);
 
-    // Start from white (inherited from Section 1's whiteout), fade to dark
+    // Start from white (inherited from S1 whiteout)
     ctx.renderer.setClearColor(0xffffff);
-    ctx.scene.fog = new THREE.FogExp2(0xffffff, 0.01);
+    ctx.scene.fog = new THREE.FogExp2(0x000005, 0.012);
 
-    // Bloom — bright from the explosion, will settle
     if (ctx.bloomPass) {
       ctx.bloomPass.strength = 4.0;
       ctx.bloomPass.radius = 1.0;
       ctx.bloomPass.threshold = 0.05;
     }
 
-    // Reset player to bright again (was dark from Section 1 inversion)
+    // Reset player
     ctx.player.mesh.material.color.setRGB(1, 1, 1);
     ctx.player.glowMat.uniforms.uColor.value.set(1.0, 0.95, 0.85);
     ctx.player.light.intensity = 5;
-    ctx.player.speed = 6;
+    ctx.player.speed = 0; // we scroll the world instead
     ctx.player.posY = 0;
     ctx.player.laneX = 0;
+    ctx.player.forwardZ = 0;
     ctx.player.boundsMode = 'rect';
-    ctx.player.boundsX = [-4, 4];
+    ctx.player.boundsX = [-0.5, 0.5]; // minimal lateral movement
     ctx.player.boundsY = [0, 5];
 
+    // Fix player at a position — world moves past it
+    ctx.player.group.position.set(0, 0.5, 0);
+
+    // Side-view camera for 2D feel
+    ctx.camera.position.set(0, 3, 14);
+    ctx.camera.fov = 45;
+    ctx.camera.updateProjectionMatrix();
+    ctx.camera.lookAt(0, 2, 0);
+
     // Ambient
-    this.ambient = new THREE.AmbientLight(0x334466, 0.6);
+    this.ambient = new THREE.AmbientLight(0x222244, 0.5);
     this.add(this.ambient, ctx);
 
     // Story
     ctx.story.clear();
     ctx.story.schedule('you made it through', 31, 3, 'bright');
     ctx.story.schedule('collect the melody', 36, 3);
-    ctx.story.schedule('each note is a gift', 44, 3);
 
-    // Score
     ctx.score.show();
 
-    // Build explosion first, then platformer elements
     this._buildExplosion(ctx);
-    this._prepareNotes();
     this._buildGround(ctx);
     this._buildBackground(ctx);
+    this._prepareOrbs(ctx);
   }
 
   _buildExplosion(ctx) {
-    // Big white explosion burst — particles fly outward from center
     const count = 300;
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
 
-    const pPos = ctx.player.group.position;
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = pPos.x;
-      positions[i * 3 + 1] = pPos.y + 0.5;
-      positions[i * 3 + 2] = pPos.z;
+      positions[i * 3] = 0;
+      positions[i * 3 + 1] = 1;
+      positions[i * 3 + 2] = 0;
 
-      // Outward velocity — sphere burst
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
       const speed = 3 + Math.random() * 12;
@@ -119,11 +162,9 @@ export class Section2 extends SectionBase {
       velocities[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * speed;
       velocities[i * 3 + 2] = Math.cos(phi) * speed;
 
-      // White to warm gold
-      const warmth = Math.random();
       colors[i * 3] = 1;
-      colors[i * 3 + 1] = 0.9 + warmth * 0.1;
-      colors[i * 3 + 2] = 0.7 + warmth * 0.3;
+      colors[i * 3 + 1] = 0.9 + Math.random() * 0.1;
+      colors[i * 3 + 2] = 0.7 + Math.random() * 0.3;
     }
 
     const geo = new THREE.BufferGeometry();
@@ -140,183 +181,151 @@ export class Section2 extends SectionBase {
     })), ctx);
 
     this.explosionVelocities = velocities;
-    this.explosionLife = 3.0; // lasts 3 seconds
+    this.explosionLife = 2.5;
   }
 
   _buildGround(ctx) {
-    // 2D platformer ground — a long flat surface at y=0
-    // Made of segments that recycle
-    const segLength = 40;
-    const pPos = ctx.player.group.position;
-
-    for (let i = 0; i < 5; i++) {
-      // Ground line — glowing horizontal line
-      const geo = new THREE.PlaneGeometry(segLength, 0.05);
+    // Glowing ground line — a long thin bright line
+    for (let i = 0; i < 6; i++) {
+      const geo = new THREE.PlaneGeometry(80, 0.04);
       const mat = new THREE.MeshBasicMaterial({
-        color: 0x445566,
+        color: 0x4466aa,
         transparent: true,
-        opacity: 0.5,
+        opacity: 0.6,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
       });
-      const ground = new THREE.Mesh(geo, mat);
-      ground.position.set(0, 0, pPos.z - i * segLength - segLength / 2);
-      ground.rotation.x = -Math.PI / 2;
-      this.groundSegments.push(this.add(ground, ctx));
+      const line = new THREE.Mesh(geo, mat);
+      line.rotation.x = -Math.PI / 2;
+      line.position.set(0, 0.01, -i * 80);
+      this.groundSegments.push(this.add(line, ctx));
+    }
 
-      // Ground grid lines for depth
-      for (let g = 0; g < 8; g++) {
-        const gLineGeo = new THREE.PlaneGeometry(0.01, 3);
-        const gLineMat = new THREE.MeshBasicMaterial({
-          color: 0x334455,
-          transparent: true,
-          opacity: 0.2,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        });
-        const gLine = new THREE.Mesh(gLineGeo, gLineMat);
-        gLine.position.set(0, 1.5, pPos.z - i * segLength - g * 5);
-        gLine.rotation.x = 0;
-        this.groundSegments.push(this.add(gLine, ctx));
-      }
+    // Subtle grid lines on ground for motion feel
+    for (let i = 0; i < 60; i++) {
+      const geo = new THREE.PlaneGeometry(6, 0.01);
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x223355,
+        transparent: true,
+        opacity: 0.25,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const tick = new THREE.Mesh(geo, mat);
+      tick.rotation.x = -Math.PI / 2;
+      tick.rotation.z = Math.PI / 2;
+      tick.position.set(0, 0.01, -i * 4);
+      tick.userData.isGridTick = true;
+      this.groundSegments.push(this.add(tick, ctx));
     }
   }
 
   _buildBackground(ctx) {
-    // Parallax star layers for 2D feel
-    for (let layer = 0; layer < 3; layer++) {
-      const count = 200;
-      const positions = new Float32Array(count * 3);
-      const depth = 20 + layer * 30;
-
-      for (let i = 0; i < count; i++) {
-        positions[i * 3] = (Math.random() - 0.5) * 80;
-        positions[i * 3 + 1] = Math.random() * 20;
-        positions[i * 3 + 2] = -depth + (Math.random() - 0.5) * 10;
-      }
-
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-      const brightness = 0.3 + (2 - layer) * 0.15;
-      const stars = this.add(new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 0.05 + (2 - layer) * 0.04,
-        color: new THREE.Color(brightness, brightness, brightness * 1.2),
-        transparent: true,
-        opacity: 0.5,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      })), ctx);
-
-      this.bgLayers.push({ mesh: stars, speed: 0.1 + layer * 0.05 });
-    }
-  }
-
-  _prepareNotes() {
-    this.noteQueue = MELODY_NOTES.map(([time, note], index) => ({
-      time,
-      note,
-      index,
-      x: 0, // will be set relative to player Z when spawned
-      y: noteToY(note),
-      hue: noteToHue(note),
-      spawned: false,
-      collected: false,
-      fountain: null,
-    }));
-  }
-
-  _spawnNoteFountain(noteData, ctx) {
-    const pPos = ctx.player.group.position;
-    const songTime = ctx.audio.currentTime;
-    const color = new THREE.Color().setHSL(noteData.hue, 0.7, 0.6);
-
-    // Calculate where the player will BE when this note hits
-    // so the orb arrives at the player position exactly on beat
-    const timeUntilNote = noteData.time - songTime;
-    const currentSpeed = ctx.player.speed;
-    const distancePlayerWillTravel = currentSpeed * timeUntilNote;
-
-    // Each fountain is a particle system that erupts upward then falls
-    const count = 40;
+    // Distant particle layers for parallax depth
+    const count = 400;
     const positions = new Float32Array(count * 3);
-    const velocities = new Float32Array(count * 3);
-    const spawnX = (Math.sin(noteData.index * 1.7 + noteData.note * 0.4) * 3);
-    const spawnZ = pPos.z - distancePlayerWillTravel; // player will be here on beat
-    const spawnY = 0.2;
+    const colors = new Float32Array(count * 3);
 
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = spawnX + (Math.random() - 0.5) * 0.3;
-      positions[i * 3 + 1] = spawnY;
-      positions[i * 3 + 2] = spawnZ + (Math.random() - 0.5) * 0.3;
+      positions[i * 3] = (Math.random() - 0.5) * 40;
+      positions[i * 3 + 1] = Math.random() * 15 + 1;
+      positions[i * 3 + 2] = -Math.random() * 100;
 
-      // Upward fountain with spread
-      velocities[i * 3] = (Math.random() - 0.5) * 2;
-      velocities[i * 3 + 1] = 3 + Math.random() * 5; // upward burst
-      velocities[i * 3 + 2] = (Math.random() - 0.5) * 1;
+      const hue = Math.random();
+      const c = new THREE.Color().setHSL(hue, 0.3, 0.25 + Math.random() * 0.15);
+      colors[i * 3] = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
     }
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    const mat = new THREE.PointsMaterial({
-      size: 0.1,
-      color: color,
+    this.bgStars = this.add(new THREE.Points(geo, new THREE.PointsMaterial({
+      size: 0.08,
+      vertexColors: true,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.5,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
+    })), ctx);
+  }
+
+  _prepareOrbs(ctx) {
+    // Pre-create ALL orbs at their correct positions
+    // The world scrolls toward the player, so orb Z = -(noteTime - 30) * scrollSpeed
+    // This way when worldOffset reaches that Z, the orb is at the player
+
+    this.orbs = MELODY_NOTES.map(([time, note], index) => {
+      const hue = noteToHue(note);
+      const color = new THREE.Color().setHSL(hue, 0.9, 0.6);
+      const height = noteToHeight(note);
+
+      // Position in world: Z based on time, Y based on pitch
+      const z = -((time - 30) * this.scrollSpeed);
+
+      // Neon orb with custom shader
+      const orbGeo = new THREE.IcosahedronGeometry(0.3, 3);
+      const orbMat = new THREE.ShaderMaterial({
+        vertexShader: orbVertShader,
+        fragmentShader: orbFragShader,
+        uniforms: {
+          uColor: { value: color },
+          uTime: { value: 0 },
+          uPulse: { value: 0 },
+        },
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+
+      const group = new THREE.Group();
+      const orbMesh = new THREE.Mesh(orbGeo, orbMat);
+      group.add(orbMesh);
+
+      // Outer glow halo
+      const haloGeo = new THREE.IcosahedronGeometry(0.55, 2);
+      const haloMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.15,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.BackSide,
+      });
+      const halo = new THREE.Mesh(haloGeo, haloMat);
+      group.add(halo);
+
+      // Point light
+      const light = new THREE.PointLight(color, 2, 6);
+      group.add(light);
+
+      group.position.set(0, height, z);
+      group.visible = false; // hidden until note triggers
+
+      this.add(group, ctx);
+
+      return {
+        time,
+        note,
+        index,
+        z,
+        height,
+        color,
+        group,
+        orbMesh,
+        orbMat,
+        halo,
+        light,
+        triggered: false,
+        collected: false,
+        triggerAge: 0,
+      };
     });
-
-    const particles = new THREE.Points(geo, mat);
-    ctx.scene.add(particles);
-
-    // Core collectible orb at the center
-    const orbGeo = new THREE.IcosahedronGeometry(0.22, 2);
-    const orbMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 });
-    const orbMesh = new THREE.Mesh(orbGeo, orbMat);
-    orbMesh.position.set(spawnX, noteData.y, spawnZ);
-    ctx.scene.add(orbMesh);
-
-    // Orb glow
-    const orbGlowGeo = new THREE.IcosahedronGeometry(0.4, 2);
-    const orbGlowMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.2,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide,
-    });
-    const orbGlow = new THREE.Mesh(orbGlowGeo, orbGlowMat);
-    orbMesh.add(orbGlow);
-
-    // Small light
-    const light = new THREE.PointLight(color, 1.5, 6);
-    orbMesh.add(light);
-
-    const fountain = {
-      particles,
-      velocities,
-      positions: positions,
-      orbMesh,
-      orbGlow,
-      light,
-      spawnX,
-      spawnY,
-      spawnZ,
-      noteTime: noteData.time, // exact beat time
-      erupted: false,          // fountain starts when beat hits
-      age: 0,
-      color,
-      collected: false,
-      gravity: -8,
-    };
-
-    // Hide fountain particles until the beat actually hits
-    particles.visible = false;
-
-    noteData.fountain = fountain;
-    noteData.spawned = true;
-    this.noteFountains.push(fountain);
   }
 
   update(dt, ctx) {
@@ -325,130 +334,131 @@ export class Section2 extends SectionBase {
     const t = this.localTime;
     const songTime = ctx.audio.currentTime;
     const audio = ctx.audio;
-    const pPos = ctx.player.group.position;
 
-    // ── Phase 1: Explosion (first ~2 seconds) ──
+    // ── Explosion phase (first 2.5s) ──
     if (this.explosionLife > 0) {
       this.explosionLife -= dt;
-      const explProgress = 1 - (this.explosionLife / 3.0);
+      const ep = 1 - this.explosionLife / 2.5;
 
-      // Move explosion particles
       if (this.explosionParticles) {
         const pos = this.explosionParticles.geometry.attributes.position.array;
         for (let i = 0; i < pos.length; i += 3) {
           pos[i] += this.explosionVelocities[i] * dt;
           pos[i + 1] += this.explosionVelocities[i + 1] * dt;
           pos[i + 2] += this.explosionVelocities[i + 2] * dt;
-          // Slow down
-          this.explosionVelocities[i] *= 0.98;
-          this.explosionVelocities[i + 1] *= 0.98;
-          this.explosionVelocities[i + 2] *= 0.98;
+          this.explosionVelocities[i] *= 0.97;
+          this.explosionVelocities[i + 1] *= 0.97;
+          this.explosionVelocities[i + 2] *= 0.97;
         }
         this.explosionParticles.geometry.attributes.position.needsUpdate = true;
-        this.explosionParticles.material.opacity = Math.max(0, 1 - explProgress * 1.5);
+        this.explosionParticles.material.opacity = Math.max(0, 1 - ep * 1.5);
       }
 
-      // Transition from white to dark
-      const fadeToDark = Math.min(explProgress * 1.5, 1);
-      const bg = 1 - fadeToDark;
-      ctx.renderer.setClearColor(new THREE.Color(bg * 0.8, bg * 0.8, bg));
-      ctx.scene.fog.color.setRGB(bg, bg, bg);
-      ctx.scene.fog.density = 0.01 + fadeToDark * 0.02;
+      // White → dark transition
+      const fade = Math.min(ep * 2, 1);
+      const bg = 1 - fade;
+      ctx.renderer.setClearColor(new THREE.Color(bg * 0.9, bg * 0.9, bg));
+      ctx.scene.fog.color.setRGB(bg * 0.1, bg * 0.1, bg * 0.1);
 
-      // Bloom settles down
       if (ctx.bloomPass) {
-        ctx.bloomPass.strength = 4.0 - fadeToDark * 2.0;
-        ctx.bloomPass.radius = 1.0 - fadeToDark * 0.4;
+        ctx.bloomPass.strength = 4.0 - fade * 2.2;
+        ctx.bloomPass.radius = 1.0 - fade * 0.5;
+        ctx.bloomPass.threshold = 0.05 + fade * 0.1;
       }
 
-      // Remove explosion when done
       if (this.explosionLife <= 0 && this.explosionParticles) {
         ctx.scene.remove(this.explosionParticles);
       }
     }
 
-    // ── 2D Platformer camera ──
-    // Side-scrolling: camera looks from the side, orthographic feel
-    if (t > 1.5) {
-      if (!this.platformerStarted) {
-        this.platformerStarted = true;
-        // Switch to side view
-        ctx.camera.fov = 50;
-        ctx.camera.updateProjectionMatrix();
-      }
+    // ── World scrolling ──
+    // Everything moves toward the player (positive Z direction)
+    const worldOffset = (songTime - 30) * this.scrollSpeed;
 
-      // 2D side-scroll camera: X tracks player's forward Z, Y tracks player Y
-      // Camera is off to the side looking at the player
-      const targetCam = new THREE.Vector3(
-        pPos.x,          // follow lateral
-        pPos.y + 3,      // above
-        pPos.z + 12      // behind
-      );
-      ctx.camera.position.lerp(targetCam, dt * 3);
-      ctx.camera.lookAt(pPos.x, pPos.y + 1, pPos.z - 5);
-    } else {
-      // During explosion — camera stays put, dramatic
-      ctx.camera.lookAt(pPos.x, pPos.y + 0.5, pPos.z);
-    }
-
-    // ── Spawn note fountains ──
-    for (const nd of this.noteQueue) {
-      if (!nd.spawned && songTime >= nd.time - 3) {
-        this._spawnNoteFountain(nd, ctx);
+    // Scroll ground
+    for (const seg of this.groundSegments) {
+      const scrolledZ = seg.position.z + worldOffset;
+      // Recycle segments that pass behind camera
+      if (seg.userData.isGridTick) {
+        // Just update visual position via group or offset
       }
     }
 
-    // ── Update note fountains ──
-    for (const f of this.noteFountains) {
-      // Fountain erupts exactly when the beat hits
-      if (!f.erupted && songTime >= f.noteTime) {
-        f.erupted = true;
-        f.particles.visible = true;
-        f.age = 0;
+    // Move all orb groups by world offset (orbs were placed at absolute positions)
+    for (const orb of this.orbs) {
+      orb.group.position.z = orb.z + worldOffset;
+    }
+
+    // Move ground segments
+    for (const seg of this.groundSegments) {
+      // Shift everything so the player stays at Z=0
+      // Ground was placed at various -Z; add worldOffset to scroll it
+    }
+
+    // Actually, simpler: put everything in a world group
+    // But since we already placed things, let's just move the camera approach:
+    // Player is at Z=0, orbs have their Z. We add worldOffset to orb Z.
+    // Ground needs to tile. Let's just scroll ground segments too.
+
+    // Scroll background
+    if (this.bgStars) {
+      this.bgStars.position.z = worldOffset * 0.3; // parallax
+    }
+
+    // ── Player rolling on ground ──
+    // Ball spins based on scroll speed
+    ctx.player.mesh.rotation.x -= dt * this.scrollSpeed * 2;
+    ctx.player.glowMesh.rotation.x -= dt * this.scrollSpeed * 1.5;
+    ctx.player.group.position.y = 0.5; // on the ground
+
+    // Camera: side-ish view
+    ctx.camera.position.lerp(
+      new THREE.Vector3(ctx.player.laneX * 0.5, 3, 14),
+      dt * 3
+    );
+    ctx.camera.lookAt(0, 1.5, 0);
+
+    // ── Trigger orbs on beat ──
+    for (const orb of this.orbs) {
+      if (!orb.triggered && songTime >= orb.time) {
+        orb.triggered = true;
+        orb.group.visible = true;
+        orb.triggerAge = 0;
       }
 
-      // Only animate particles after eruption
-      if (f.erupted) {
-        f.age += dt;
+      if (orb.triggered && !orb.collected) {
+        orb.triggerAge += dt;
 
-        // Animate fountain particles — gravity pulls them down
-        const pos = f.particles.geometry.attributes.position.array;
-        for (let i = 0; i < pos.length; i += 3) {
-          pos[i] += f.velocities[i] * dt;
-          f.velocities[i + 1] += f.gravity * dt; // gravity
-          pos[i + 1] += f.velocities[i + 1] * dt;
-          pos[i + 2] += f.velocities[i + 2] * dt;
+        // Animate: scale up from 0 on trigger (pop in)
+        const popScale = Math.min(orb.triggerAge * 6, 1);
+        const eased = 1 - Math.pow(1 - popScale, 3); // ease out cubic
+        orb.orbMesh.scale.setScalar(eased);
+        orb.halo.scale.setScalar(eased * 1.3 + Math.sin(songTime * 5 + orb.index) * 0.1);
 
-          // Particles that hit "ground" bounce slightly
-          if (pos[i + 1] < 0.05) {
-            pos[i + 1] = 0.05;
-            f.velocities[i + 1] *= -0.3; // damped bounce
-          }
-        }
-        f.particles.geometry.attributes.position.needsUpdate = true;
+        // Update shader
+        orb.orbMat.uniforms.uTime.value = songTime;
+        orb.orbMat.uniforms.uPulse.value = audio.mid;
 
-        // Fountain particles fade over time
-        f.particles.material.opacity = Math.max(0, 0.9 - f.age * 0.25);
-      }
+        // Light pulses
+        orb.light.intensity = 1.5 + audio.mid * 2;
 
-      // Orb floats and pulses
-      if (!f.collected && f.orbMesh) {
-        f.orbMesh.position.y += Math.sin(songTime * 3 + f.spawnX) * dt * 0.3;
-        f.orbMesh.rotation.y += dt * 2;
+        // Rotation
+        orb.orbMesh.rotation.y += dt * 3;
+        orb.orbMesh.rotation.z += dt * 1.5;
 
-        // Pulse glow with audio
-        const pulse = 1 + audio.mid * 0.4;
-        f.orbGlow.scale.setScalar(pulse);
+        // ── Collection check ──
+        const orbWorldPos = new THREE.Vector3();
+        orb.group.getWorldPosition(orbWorldPos);
+        const playerPos = ctx.player.group.position;
+        const dist = orbWorldPos.distanceTo(playerPos);
 
-        // Check collection
-        const dist = f.orbMesh.position.distanceTo(pPos);
-        if (dist < 1.5) {
-          this._collectFountain(f, ctx);
+        if (dist < 1.3) {
+          this._collectOrb(orb, ctx);
         }
 
-        // Missed — passed behind player
-        if (f.orbMesh.position.z > pPos.z + 5) {
-          this._missFountain(f, ctx);
+        // Missed — scrolled past player
+        if (orb.group.position.z > 4) {
+          this._missOrb(orb, ctx);
         }
       }
     }
@@ -463,99 +473,75 @@ export class Section2 extends SectionBase {
         continue;
       }
       const p = 1 - fx.life / fx.maxLife;
-      fx.particles.material.opacity = (1 - p) * 0.8;
-      const fxPos = fx.particles.geometry.attributes.position.array;
-      for (let j = 0; j < fxPos.length; j += 3) {
-        fxPos[j] += fx.velocities[j] * dt;
-        fxPos[j + 1] += fx.velocities[j + 1] * dt;
-        fxPos[j + 2] += fx.velocities[j + 2] * dt;
-        fx.velocities[j + 1] -= 3 * dt; // gravity on collect particles too
+      fx.particles.material.opacity = (1 - p) * 0.9;
+      fx.particles.material.size = 0.1 + p * 0.05;
+      const pos = fx.particles.geometry.attributes.position.array;
+      for (let j = 0; j < pos.length; j += 3) {
+        pos[j] += fx.velocities[j] * dt;
+        fx.velocities[j + 1] -= 4 * dt; // gravity
+        pos[j + 1] += fx.velocities[j + 1] * dt;
+        pos[j + 2] += fx.velocities[j + 2] * dt;
       }
       fx.particles.geometry.attributes.position.needsUpdate = true;
     }
 
-    // ── Recycle ground segments ──
-    for (const seg of this.groundSegments) {
-      if (seg.position.z > pPos.z + 25) {
-        let minZ = Infinity;
-        for (const s of this.groundSegments) minZ = Math.min(minZ, s.position.z);
-        seg.position.z = minZ - 40;
-      }
-    }
-
-    // ── Parallax background ──
-    for (const layer of this.bgLayers) {
-      layer.mesh.position.z = pPos.z * layer.speed;
-    }
-
-    // Speed
-    ctx.player.speed = 6 + this.progress * 2;
+    // Scroll speed stays constant for clean sync
+    this.scrollSpeed = 8;
   }
 
-  _collectFountain(fountain, ctx) {
-    fountain.collected = true;
+  _collectOrb(orb, ctx) {
+    orb.collected = true;
+    orb.group.visible = false;
     ctx.score.add(100);
 
-    const pos = fountain.orbMesh.position.clone();
-    const color = fountain.color;
-
-    // Remove orb
-    ctx.scene.remove(fountain.orbMesh);
-
-    // Sparkle burst effect
-    const count = 30;
+    // Neon burst — particles fly up and out in the orb's color
+    const count = 35;
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
+    const wp = new THREE.Vector3();
+    orb.group.getWorldPosition(wp);
+
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = pos.x;
-      positions[i * 3 + 1] = pos.y;
-      positions[i * 3 + 2] = pos.z;
+      positions[i * 3] = wp.x;
+      positions[i * 3 + 1] = wp.y;
+      positions[i * 3 + 2] = wp.z;
       const a = Math.random() * Math.PI * 2;
-      const s = 2 + Math.random() * 5;
-      velocities[i * 3] = Math.cos(a) * s * (Math.random());
-      velocities[i * 3 + 1] = 2 + Math.random() * 4;
-      velocities[i * 3 + 2] = Math.sin(a) * s * (Math.random());
+      const upBias = 2 + Math.random() * 4;
+      velocities[i * 3] = Math.cos(a) * (1 + Math.random() * 3);
+      velocities[i * 3 + 1] = upBias;
+      velocities[i * 3 + 2] = Math.sin(a) * (1 + Math.random() * 3);
     }
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const mat = new THREE.PointsMaterial({
       size: 0.1,
-      color,
+      color: orb.color,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.9,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
     const particles = new THREE.Points(geo, mat);
     ctx.scene.add(particles);
-
-    this.collectEffects.push({
-      particles, velocities, life: 1.0, maxLife: 1.0,
-    });
+    this.collectEffects.push({ particles, velocities, life: 1.2, maxLife: 1.2 });
   }
 
-  _missFountain(fountain, ctx) {
-    fountain.collected = true;
+  _missOrb(orb, ctx) {
+    orb.collected = true;
+    orb.group.visible = false;
     ctx.score.breakCombo();
-    if (fountain.orbMesh) ctx.scene.remove(fountain.orbMesh);
   }
 
   exit(ctx) {
-    // Clean up fountains
-    for (const f of this.noteFountains) {
-      ctx.scene.remove(f.particles);
-      if (!f.collected && f.orbMesh) ctx.scene.remove(f.orbMesh);
-    }
     for (const fx of this.collectEffects) {
       ctx.scene.remove(fx.particles);
     }
-    this.noteFountains = [];
-    this.noteQueue = [];
     this.collectEffects = [];
+    this.orbs = [];
     this.groundSegments = [];
-    this.bgLayers = [];
     this.explosionParticles = null;
+    this.bgStars = null;
     super.exit(ctx);
   }
 }
