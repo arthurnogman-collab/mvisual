@@ -1,67 +1,176 @@
 import * as THREE from 'three';
 
 /**
- * The Runner — starts as a glowing sphere, can morph between forms.
- * Sections can change its shape, but the player object persists across sections.
+ * The Runner — starts as an ethereal glowing orb with noisy shader glow.
+ * Sections can morph its form, but the player object persists.
  */
+
+// Vertex shader for the glow orb
+const glowVertexShader = `
+  varying vec3 vNormal;
+  varying vec3 vWorldPos;
+  varying vec2 vUv;
+  void main() {
+    vNormal = normalize(normalMatrix * normal);
+    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+// Fragment shader — ethereal noisy glow
+const glowFragmentShader = `
+  uniform float uTime;
+  uniform float uEnergy;
+  uniform float uBass;
+  uniform vec3 uColor;
+  varying vec3 vNormal;
+  varying vec3 vWorldPos;
+  varying vec2 vUv;
+
+  // Simplex-style noise
+  vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+  vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+  float snoise(vec3 v) {
+    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i  = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min(g.xyz, l.zxy);
+    vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + C.yyy;
+    vec3 x3 = x0 - D.yyy;
+    i = mod289(i);
+    vec4 p = permute(permute(permute(
+              i.z + vec4(0.0, i1.z, i2.z, 1.0))
+            + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+            + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 0.142857142857;
+    vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy;
+    vec4 y = y_ * ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy);
+    vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0)*2.0 + 1.0;
+    vec4 s1 = floor(b1)*2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+    vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x);
+    vec3 p1 = vec3(a0.zw, h.y);
+    vec3 p2 = vec3(a1.xy, h.z);
+    vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+  }
+
+  void main() {
+    // View-dependent rim glow
+    vec3 viewDir = normalize(cameraPosition - vWorldPos);
+    float rim = 1.0 - abs(dot(viewDir, vNormal));
+    rim = pow(rim, 2.0);
+
+    // Animated noise crawling over the surface
+    float n1 = snoise(vWorldPos * 3.0 + uTime * 0.5) * 0.5 + 0.5;
+    float n2 = snoise(vWorldPos * 8.0 - uTime * 0.3) * 0.5 + 0.5;
+    float noisePattern = n1 * 0.7 + n2 * 0.3;
+
+    // Breathing pulse
+    float breath = sin(uTime * 1.5) * 0.15 + 0.85;
+    float pulse = breath + uBass * 0.5;
+
+    // Core glow — white/warm center, fading outward
+    float coreGlow = exp(-rim * 0.5) * pulse;
+
+    // Noisy ethereal wisps
+    float wisps = rim * noisePattern * (1.0 + uEnergy * 2.0);
+
+    // Combine
+    float alpha = (coreGlow * 0.6 + wisps * 0.5) * pulse;
+    alpha = clamp(alpha, 0.0, 1.0);
+
+    // Color: mostly white with subtle warmth
+    vec3 col = mix(uColor, vec3(1.0), 0.7 + noisePattern * 0.3);
+    col += rim * vec3(0.8, 0.85, 1.0) * 0.3; // subtle cool rim
+
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
 export class Player {
   constructor(scene) {
     this.scene = scene;
-
-    // Current form
     this.group = new THREE.Group();
     this.scene.add(this.group);
 
-    // Default sphere form
     this.mesh = null;
-    this.glow = null;
+    this.glowMesh = null;
+    this.light = null;
+    this.glowMat = null;
     this.buildSphere();
 
     // Movement state
-    this.laneX = 0;         // target X position
-    this.posY = 0;          // target Y position
-    this.speed = 0;         // forward speed (set by section)
-    this.forwardZ = 0;      // accumulated forward distance
-
-    // Breathing state (driven by audio)
+    this.laneX = 0;
+    this.posY = 0;
+    this.speed = 0;
+    this.forwardZ = 0;
     this.breathPhase = 0;
+    this.elapsed = 0;
   }
 
   buildSphere() {
-    // Clear old form
     while (this.group.children.length) {
       this.group.remove(this.group.children[0]);
     }
 
-    // Core sphere
-    const geo = new THREE.IcosahedronGeometry(0.3, 3);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x8844ff,
-      emissive: 0x5522aa,
-      emissiveIntensity: 0.5,
-      metalness: 0.3,
-      roughness: 0.4,
+    // Tiny bright core
+    const coreGeo = new THREE.IcosahedronGeometry(0.12, 3);
+    const coreMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
     });
-    this.mesh = new THREE.Mesh(geo, mat);
+    this.mesh = new THREE.Mesh(coreGeo, coreMat);
     this.group.add(this.mesh);
 
-    // Outer glow shell
-    const glowGeo = new THREE.IcosahedronGeometry(0.45, 2);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: 0xaa66ff,
+    // Shader glow shell — the main visual
+    const glowGeo = new THREE.IcosahedronGeometry(0.5, 4);
+    this.glowMat = new THREE.ShaderMaterial({
+      vertexShader: glowVertexShader,
+      fragmentShader: glowFragmentShader,
+      uniforms: {
+        uTime: { value: 0 },
+        uEnergy: { value: 0 },
+        uBass: { value: 0 },
+        uColor: { value: new THREE.Color(0.9, 0.9, 1.0) },
+      },
       transparent: true,
-      opacity: 0.15,
-      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
     });
-    this.glow = new THREE.Mesh(glowGeo, glowMat);
-    this.group.add(this.glow);
+    this.glowMesh = new THREE.Mesh(glowGeo, this.glowMat);
+    this.group.add(this.glowMesh);
 
-    // Point light emanating from the player
-    const light = new THREE.PointLight(0x8844ff, 2, 8);
-    this.group.add(light);
+    // Soft white point light
+    this.light = new THREE.PointLight(0xeeeeff, 3, 12);
+    this.group.add(this.light);
   }
 
   update(dt, input, audio) {
+    this.elapsed += dt;
+
     // Lateral movement
     const lateralSpeed = 4;
     if (input.left)  this.laneX -= lateralSpeed * dt;
@@ -77,25 +186,25 @@ export class Player {
     // Forward movement
     this.forwardZ -= this.speed * dt;
 
-    // Apply position
+    // Position
     this.group.position.set(this.laneX, this.posY + 0.5, this.forwardZ);
 
-    // Breathing / pulsing from audio
-    this.breathPhase += dt * 2;
-    const breathScale = 1 + Math.sin(this.breathPhase) * 0.05;
-    const audioScale = 1 + audio.energy * 0.8;
+    // Update shader uniforms
+    this.glowMat.uniforms.uTime.value = this.elapsed;
+    this.glowMat.uniforms.uEnergy.value = audio.energy;
+    this.glowMat.uniforms.uBass.value = audio.bass;
+
+    // Breathing scale
+    this.breathPhase += dt * 1.5;
+    const breathScale = 1 + Math.sin(this.breathPhase) * 0.08;
+    const audioScale = 1 + audio.energy * 0.5;
     const s = breathScale * audioScale;
-    this.mesh.scale.setScalar(s);
-    this.glow.scale.setScalar(s * 1.3);
+    this.glowMesh.scale.setScalar(s);
 
-    // Emissive intensity from bass
-    this.mesh.material.emissiveIntensity = 0.5 + audio.bass * 2;
+    // Light intensity from audio
+    this.light.intensity = 2 + audio.energy * 5 + audio.bass * 3;
 
-    // Glow opacity from energy
-    this.glow.material.opacity = 0.1 + audio.energy * 0.4;
-
-    // Slow rotation
-    this.mesh.rotation.y += dt * 0.5;
-    this.mesh.rotation.x += dt * 0.3;
+    // Core subtle rotation
+    this.mesh.rotation.y += dt * 0.3;
   }
 }

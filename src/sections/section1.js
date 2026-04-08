@@ -2,157 +2,218 @@ import * as THREE from 'three';
 import { SectionBase } from './section-base.js';
 
 /**
- * SECTION 1 — "The Void Awakening" (0:00 – 0:30)
+ * SECTION 1 — "The Tunnel" (0:00 – 0:30)
  *
- * Music: Single sustained F#3 synth pad. 30 seconds of emptiness.
+ * Music: Single sustained F#3 synth pad. 30 seconds of near-silence.
  *
- * Visuals: DMT/ayahuasca trip onset.
- *  - Deep black void with faint sacred geometry wireframes
- *  - Slowly rotating mandala behind the player
- *  - Tiny geometric particles drifting through space
- *  - Everything breathes with the sustained pad note
- *  - Colors: deep indigo, violet, electric cyan hints
- *  - At ~28s, a crack of light appears ahead — the portal to Section 2
+ * Concept: After-death tunnel. You are a soul — a noisy white orb —
+ *          drifting through a dark tunnel toward a distant light.
+ *          The goal is to follow the light. Reach it, and the melody
+ *          begins (Section 2's gift).
  *
- * Gameplay: Almost no speed. Player floats, getting used to controls.
- *           Nothing to dodge or collect. Pure atmosphere.
+ * Visuals:
+ *  - Dark cylindrical tunnel stretching into the distance
+ *  - Faint sacred geometry etched into the tunnel walls (subtle, not random)
+ *  - Sparse white particles drift past like dust motes in darkness
+ *  - A single bright light at the far end — warm, beckoning
+ *  - As you get closer (time progresses), the light grows, tunnel brightens
+ *  - Minimal. Intentional. Every element has meaning.
+ *
+ * Gameplay: Slow drift forward. Move left/right/up/down to stay
+ *           centered in the tunnel. The light is the only guide.
  */
+
+// Tunnel wall shader — dark with faint sacred geometry patterns
+const tunnelVertexShader = `
+  varying vec2 vUv;
+  varying vec3 vWorldPos;
+  varying vec3 vNormal;
+  void main() {
+    vUv = uv;
+    vNormal = normalize(normalMatrix * normal);
+    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const tunnelFragmentShader = `
+  uniform float uTime;
+  uniform float uProgress;
+  uniform float uEnergy;
+  uniform vec3 uPlayerPos;
+  varying vec2 vUv;
+  varying vec3 vWorldPos;
+  varying vec3 vNormal;
+
+  #define PI 3.14159265359
+
+  // Simple hash noise
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+
+  void main() {
+    // Distance from player — things near the orb are slightly lit
+    float distFromPlayer = length(vWorldPos - uPlayerPos);
+    float playerLight = exp(-distFromPlayer * 0.3) * 0.15;
+
+    // Sacred geometry pattern on tunnel walls
+    // Use the angle around the tunnel and distance along it
+    float angle = atan(vWorldPos.y - 0.5, vWorldPos.x) / PI; // -1 to 1
+    float depth = vWorldPos.z * 0.15;
+
+    // Hexagonal grid pattern
+    float hexAngle = fract(angle * 3.0 + depth) * 2.0 - 1.0;
+    float hexDepth = fract(depth + angle * 0.5) * 2.0 - 1.0;
+    float hexDist = max(abs(hexAngle), abs(hexDepth * 0.866 + hexAngle * 0.5));
+    float hexLine = smoothstep(0.02, 0.0, abs(hexDist - 0.5));
+
+    // Subtle veins of light
+    float vein = sin(angle * 6.0 * PI + depth * 2.0 + uTime * 0.2) * 0.5 + 0.5;
+    vein = pow(vein, 8.0) * 0.1;
+
+    // Pattern fades in over time and brightens near the end
+    float patternStrength = smoothstep(0.0, 0.3, uProgress) * 0.08
+                          + uProgress * 0.05
+                          + uEnergy * 0.05;
+
+    // Combine
+    float light = playerLight + hexLine * patternStrength + vein * patternStrength;
+
+    // Color: very dark, hints of cool blue-white
+    vec3 col = vec3(0.7, 0.75, 0.9) * light;
+
+    // Slight warm tint toward the far end (where the light is)
+    float endGlow = smoothstep(-50.0, -80.0, vWorldPos.z - uPlayerPos.z) * uProgress * 0.03;
+    col += vec3(1.0, 0.9, 0.7) * endGlow;
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
 export class Section1 extends SectionBase {
   constructor() {
-    super('void-awakening', 0, 30);
-    this.mandala = null;
+    super('the-tunnel', 0, 30);
+    this.tunnelSegments = [];
     this.particles = null;
-    this.portalLight = null;
-    this.sacredRings = [];
-    this.floatingGeo = [];
+    this.endLight = null;
+    this.endLightFlare = null;
+    this.tunnelMat = null;
+    this.rings = [];
   }
 
   enter(ctx) {
     super.enter(ctx);
 
-    // Dark fog — not too dense so geometry is visible
-    ctx.scene.fog = new THREE.FogExp2(0x050008, 0.025);
-    ctx.renderer.setClearColor(0x020005);
+    // Pure black
+    ctx.scene.fog = new THREE.FogExp2(0x000000, 0.02);
+    ctx.renderer.setClearColor(0x000000);
 
-    // Player setup for this section
-    ctx.player.speed = 1.5;
-    ctx.player.mesh.material.color.setHex(0x8844ff);
-    ctx.player.mesh.material.emissive.setHex(0x5522aa);
+    // Bloom — ethereal glow for the tunnel
+    if (ctx.bloomPass) {
+      ctx.bloomPass.strength = 1.8;
+      ctx.bloomPass.radius = 0.6;
+      ctx.bloomPass.threshold = 0.15;
+    }
 
-    // Camera position — behind and slightly above player
-    ctx.camera.position.set(0, 2, 5);
-    ctx.camera.lookAt(0, 0.5, -10);
+    // Player setup
+    ctx.player.speed = 3;
+    ctx.player.glowMat.uniforms.uColor.value.set(0.9, 0.9, 1.0);
 
-    // Dim ambient
-    this.ambient = new THREE.AmbientLight(0x220044, 0.6);
+    // Camera — close behind player, looking forward
+    ctx.camera.position.set(0, 1.5, 4);
+    ctx.camera.lookAt(0, 0.5, -20);
+
+    // Very dim ambient — tunnel should be almost black
+    this.ambient = new THREE.AmbientLight(0x111122, 0.1);
     this.add(this.ambient, ctx);
 
-    this._buildMandala(ctx);
+    // Story
+    ctx.story.clear();
+    ctx.story.schedule('...', 1, 3);
+    ctx.story.schedule('follow the light', 6, 4);
+    ctx.story.schedule('let go', 14, 3);
+    ctx.story.schedule('you are almost there', 22, 3, 'bright');
+    ctx.story.schedule('step into the light', 27, 3, 'bright');
+
+    this._buildTunnel(ctx);
     this._buildSacredRings(ctx);
     this._buildParticles(ctx);
-    this._buildPortal(ctx);
-    this._buildFloatingGeometry(ctx);
+    this._buildEndLight(ctx);
   }
 
-  _buildMandala(ctx) {
-    // Large rotating mandala behind the player — sacred geometry feel
-    const group = new THREE.Group();
+  _buildTunnel(ctx) {
+    // Long tunnel made of cylinder segments
+    const segmentLength = 30;
+    const segmentCount = 6;
+    const radius = 4;
 
-    const ringCount = 6;
-    for (let i = 0; i < ringCount; i++) {
-      const radius = 3 + i * 1.5;
-      const segments = 6 + i * 6; // hexagonal -> more complex
-      const geo = new THREE.RingGeometry(radius - 0.02, radius + 0.02, segments);
-      const mat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color().setHSL(0.75 - i * 0.03, 0.9, 0.5),
-        transparent: true,
-        opacity: 0.3 - i * 0.03,
-        side: THREE.DoubleSide,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const ring = new THREE.Mesh(geo, mat);
-      ring.rotation.z = (i * Math.PI) / ringCount;
-      group.add(ring);
+    this.tunnelMat = new THREE.ShaderMaterial({
+      vertexShader: tunnelVertexShader,
+      fragmentShader: tunnelFragmentShader,
+      uniforms: {
+        uTime: { value: 0 },
+        uProgress: { value: 0 },
+        uEnergy: { value: 0 },
+        uPlayerPos: { value: new THREE.Vector3() },
+      },
+      side: THREE.BackSide,
+    });
+
+    for (let i = 0; i < segmentCount; i++) {
+      const geo = new THREE.CylinderGeometry(radius, radius, segmentLength, 24, 1, true);
+      geo.rotateX(Math.PI / 2); // align along Z axis
+      const mesh = new THREE.Mesh(geo, this.tunnelMat);
+      mesh.position.set(0, 0.5, -segmentLength * i - segmentLength / 2);
+      this.tunnelSegments.push(this.add(mesh, ctx));
     }
-
-    // Inner pattern — triangles forming Star of David / hexagram
-    for (let i = 0; i < 6; i++) {
-      const angle = (i / 6) * Math.PI * 2;
-      const lineGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(Math.cos(angle) * 8, Math.sin(angle) * 8, 0),
-      ]);
-      const lineMat = new THREE.LineBasicMaterial({
-        color: 0x9955ff,
-        transparent: true,
-        opacity: 0.3,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      group.add(new THREE.Line(lineGeo, lineMat));
-    }
-
-    group.position.set(0, 1, -20);
-    this.mandala = this.add(group, ctx);
   }
 
   _buildSacredRings(ctx) {
-    // Floating sacred geometry rings around the path
-    for (let i = 0; i < 8; i++) {
-      const geo = new THREE.TorusGeometry(1.2 + Math.random() * 0.8, 0.02, 8, 6 + Math.floor(Math.random() * 3) * 6);
+    // A few thin rings inside the tunnel at intervals — like gates you pass through
+    // These are intentional markers, not random clutter
+    const ringPositions = [-15, -35, -55, -75];
+
+    for (const z of ringPositions) {
+      const geo = new THREE.TorusGeometry(3.5, 0.015, 8, 64);
       const mat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color().setHSL(0.7 + Math.random() * 0.15, 0.9, 0.45),
+        color: 0x667799,
         transparent: true,
-        opacity: 0.4,
-        wireframe: true,
+        opacity: 0.15,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       });
       const ring = new THREE.Mesh(geo, mat);
-      ring.position.set(
-        (Math.random() - 0.5) * 8,
-        Math.random() * 4,
-        -5 - i * 5
-      );
-      ring.rotation.set(
-        Math.random() * Math.PI,
-        Math.random() * Math.PI,
-        0
-      );
-      ring.userData.rotSpeed = (Math.random() - 0.5) * 0.5;
-      ring.userData.floatOffset = Math.random() * Math.PI * 2;
-      this.sacredRings.push(this.add(ring, ctx));
+      ring.position.set(0, 0.5, z);
+      ring.userData.baseZ = z;
+      this.rings.push(this.add(ring, ctx));
     }
   }
 
   _buildParticles(ctx) {
-    // Dust particles drifting through the void
-    const count = 500;
+    // Sparse white dust motes — very few, not a blizzard
+    const count = 150;
     const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
+    const opacities = new Float32Array(count);
 
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = (Math.random() - 0.5) * 20;
-      positions[i * 3 + 1] = Math.random() * 10;
-      positions[i * 3 + 2] = (Math.random() - 0.5) * 60 - 10;
-
-      const hue = 0.7 + Math.random() * 0.2;
-      const c = new THREE.Color().setHSL(hue, 0.9, 0.5 + Math.random() * 0.3);
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
+      // Distribute inside the tunnel cylinder
+      const angle = Math.random() * Math.PI * 2;
+      const r = Math.random() * 3;
+      positions[i * 3] = Math.cos(angle) * r;
+      positions[i * 3 + 1] = Math.sin(angle) * r + 0.5;
+      positions[i * 3 + 2] = -Math.random() * 120;
+      opacities[i] = 0.3 + Math.random() * 0.7;
     }
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const mat = new THREE.PointsMaterial({
-      size: 0.1,
-      vertexColors: true,
+      size: 0.04,
+      color: 0xccccdd,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.5,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
@@ -160,66 +221,39 @@ export class Section1 extends SectionBase {
     this.particles = this.add(new THREE.Points(geo, mat), ctx);
   }
 
-  _buildPortal(ctx) {
-    // Portal light that appears near the end — crack of light ahead
-    const geo = new THREE.PlaneGeometry(0.1, 6);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+  _buildEndLight(ctx) {
+    // The light at the end of the tunnel — starts as a tiny point, grows
+
+    // Core bright point
+    const lightGeo = new THREE.CircleGeometry(0.3, 32);
+    const lightMat = new THREE.MeshBasicMaterial({
+      color: 0xfff8ee,
       transparent: true,
-      opacity: 0,
+      opacity: 0.6,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
       side: THREE.DoubleSide,
     });
-    this.portalLight = this.add(new THREE.Mesh(geo, mat), ctx);
-    this.portalLight.position.set(0, 2, -40);
+    this.endLight = this.add(new THREE.Mesh(lightGeo, lightMat), ctx);
+    this.endLight.position.set(0, 0.5, -100);
 
-    // Portal glow
-    const glowGeo = new THREE.PlaneGeometry(3, 8);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: 0x8844ff,
+    // Soft glow flare around it
+    const flareGeo = new THREE.CircleGeometry(2, 32);
+    const flareMat = new THREE.MeshBasicMaterial({
+      color: 0xffeedd,
       transparent: true,
-      opacity: 0,
+      opacity: 0.0,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
       side: THREE.DoubleSide,
     });
-    this.portalGlow = this.add(new THREE.Mesh(glowGeo, glowMat), ctx);
-    this.portalGlow.position.set(0, 2, -40);
-  }
+    this.endLightFlare = this.add(new THREE.Mesh(flareGeo, flareMat), ctx);
+    this.endLightFlare.position.set(0, 0.5, -100);
 
-  _buildFloatingGeometry(ctx) {
-    // Sacred geometry shapes floating in the void — tetrahedra, octahedra, icosahedra
-    const geoTypes = [
-      new THREE.TetrahedronGeometry(0.2, 0),
-      new THREE.OctahedronGeometry(0.2, 0),
-      new THREE.IcosahedronGeometry(0.15, 0),
-      new THREE.TetrahedronGeometry(0.15, 1),
-    ];
-
-    for (let i = 0; i < 20; i++) {
-      const geo = geoTypes[i % geoTypes.length];
-      const hue = 0.7 + Math.random() * 0.2;
-      const mat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color().setHSL(hue, 0.9, 0.45),
-        wireframe: true,
-        transparent: true,
-        opacity: 0.4,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(
-        (Math.random() - 0.5) * 12,
-        Math.random() * 5,
-        -3 - Math.random() * 50
-      );
-      mesh.userData.rotSpeed = new THREE.Vector3(
-        (Math.random() - 0.5) * 0.8,
-        (Math.random() - 0.5) * 0.8,
-        (Math.random() - 0.5) * 0.4
-      );
-      mesh.userData.floatOffset = Math.random() * Math.PI * 2;
-      this.floatingGeo.push(this.add(mesh, ctx));
-    }
+    // Actual Three.js point light at the end
+    this.endPointLight = new THREE.PointLight(0xffeedd, 0.5, 60);
+    this.endPointLight.position.set(0, 0.5, -100);
+    this.add(this.endPointLight, ctx);
   }
 
   update(dt, ctx) {
@@ -227,119 +261,132 @@ export class Section1 extends SectionBase {
 
     const t = this.localTime;
     const audio = ctx.audio;
-
-    // Camera follows player smoothly
     const pPos = ctx.player.group.position;
-    ctx.camera.position.lerp(
-      new THREE.Vector3(pPos.x * 0.3, pPos.y + 2, pPos.z + 5),
-      dt * 2
+
+    // Update tunnel shader
+    if (this.tunnelMat) {
+      this.tunnelMat.uniforms.uTime.value = t;
+      this.tunnelMat.uniforms.uProgress.value = this.progress;
+      this.tunnelMat.uniforms.uEnergy.value = audio.energy;
+      this.tunnelMat.uniforms.uPlayerPos.value.copy(pPos);
+    }
+
+    // Camera — smooth follow behind player, looking into the tunnel
+    const targetCam = new THREE.Vector3(
+      pPos.x * 0.2,
+      pPos.y + 1.2,
+      pPos.z + 3.5
     );
-    ctx.camera.lookAt(pPos.x * 0.5, pPos.y + 0.5, pPos.z - 10);
+    ctx.camera.position.lerp(targetCam, dt * 3);
+    ctx.camera.lookAt(pPos.x * 0.3, pPos.y + 0.3, pPos.z - 15);
 
-    // Mandala — slow rotation, breathes with audio
-    if (this.mandala) {
-      this.mandala.rotation.z += dt * 0.1;
-      const breathScale = 1 + Math.sin(t * 0.4) * 0.1 + audio.energy * 0.5;
-      this.mandala.scale.setScalar(breathScale);
-
-      // Fade in mandala over first 5 seconds
-      const mandalaFade = Math.min(t / 5, 1);
-      this.mandala.children.forEach(child => {
-        if (child.material && child.material._baseOpacity === undefined) {
-          child.material._baseOpacity = child.material.opacity;
-        }
-        if (child.material) {
-          child.material.opacity = (child.material._baseOpacity || 0.3) * mandalaFade + audio.energy * 0.2;
-        }
-      });
-
-      // Move mandala forward with player (stays in background)
-      this.mandala.position.z = pPos.z - 20;
+    // Recycle tunnel segments — infinite tunnel illusion
+    for (const seg of this.tunnelSegments) {
+      if (seg.position.z > pPos.z + 20) {
+        // Move to the front
+        let minZ = Infinity;
+        for (const s of this.tunnelSegments) minZ = Math.min(minZ, s.position.z);
+        seg.position.z = minZ - 30;
+      }
     }
 
-    // Sacred rings — rotate and float
-    for (const ring of this.sacredRings) {
-      ring.rotation.x += ring.userData.rotSpeed * dt;
-      ring.rotation.y += ring.userData.rotSpeed * dt * 0.7;
-      ring.position.y += Math.sin(t * 0.5 + ring.userData.floatOffset) * dt * 0.2;
+    // Sacred rings — glow slightly as player approaches, then recycle
+    for (const ring of this.rings) {
+      const distToPlayer = Math.abs(ring.position.z - pPos.z);
 
-      // Breathe opacity with audio
-      ring.material.opacity = 0.12 + audio.energy * 0.3 + Math.sin(t * 0.3 + ring.userData.floatOffset) * 0.05;
+      // Glow when passing through
+      if (distToPlayer < 5) {
+        ring.material.opacity = 0.15 + (1 - distToPlayer / 5) * 0.4;
+      } else {
+        ring.material.opacity = 0.08;
+      }
 
-      // Recycle rings that fall behind player
+      // Recycle behind player
       if (ring.position.z > pPos.z + 5) {
-        ring.position.z = pPos.z - 30 - Math.random() * 15;
-        ring.position.x = (Math.random() - 0.5) * 8;
+        let minZ = Infinity;
+        for (const r of this.rings) minZ = Math.min(minZ, r.position.z);
+        ring.position.z = minZ - 25;
       }
     }
 
-    // Floating geometry — rotate, recycle
-    for (const mesh of this.floatingGeo) {
-      const rs = mesh.userData.rotSpeed;
-      mesh.rotation.x += rs.x * dt;
-      mesh.rotation.y += rs.y * dt;
-      mesh.rotation.z += rs.z * dt;
-      mesh.position.y += Math.sin(t * 0.6 + mesh.userData.floatOffset) * dt * 0.15;
-
-      // Pulse with audio
-      const s = 1 + audio.energy * 0.5;
-      mesh.scale.setScalar(s);
-
-      // Recycle
-      if (mesh.position.z > pPos.z + 5) {
-        mesh.position.z = pPos.z - 30 - Math.random() * 25;
-        mesh.position.x = (Math.random() - 0.5) * 12;
-      }
-    }
-
-    // Particles — drift and shimmer
+    // Particles — drift and recycle
     if (this.particles) {
       const positions = this.particles.geometry.attributes.position.array;
       for (let i = 0; i < positions.length; i += 3) {
-        // Recycle particles that pass the player
-        if (positions[i + 2] > pPos.z + 10) {
-          positions[i + 2] = pPos.z - 40 - Math.random() * 20;
-          positions[i] = (Math.random() - 0.5) * 20;
-          positions[i + 1] = Math.random() * 10;
+        // Slow drift upward and forward
+        positions[i + 1] += dt * 0.05;
+
+        // Recycle behind player
+        if (positions[i + 2] > pPos.z + 8) {
+          const angle = Math.random() * Math.PI * 2;
+          const r = Math.random() * 3;
+          positions[i] = Math.cos(angle) * r;
+          positions[i + 1] = Math.sin(angle) * r + 0.5;
+          positions[i + 2] = pPos.z - 60 - Math.random() * 60;
         }
       }
       this.particles.geometry.attributes.position.needsUpdate = true;
-      this.particles.material.opacity = 0.3 + audio.energy * 0.5;
+
+      // Particles get slightly brighter as section progresses
+      this.particles.material.opacity = 0.3 + this.progress * 0.3 + audio.energy * 0.3;
     }
 
-    // Portal — appears in last 4 seconds
-    const portalStart = 26;
-    if (t > portalStart && this.portalLight) {
-      const portalProgress = (t - portalStart) / (this.endTime - this.startTime - portalStart);
-      const portalOpacity = portalProgress * portalProgress; // ease in
+    // The light at the end — grows as you progress
+    // It's always ahead, getting closer and brighter
+    const lightZ = pPos.z - 70 + this.progress * 45; // approaches from -70 to -25 relative
+    this.endLight.position.z = lightZ;
+    this.endLightFlare.position.z = lightZ;
+    this.endPointLight.position.z = lightZ;
 
-      this.portalLight.material.opacity = portalOpacity * 0.9;
-      this.portalLight.scale.x = 1 + portalProgress * 20;
-      this.portalLight.position.z = pPos.z - 35;
+    // Light grows in size and intensity
+    const lightScale = 0.5 + this.progress * 3;
+    this.endLight.scale.setScalar(lightScale);
+    this.endLight.material.opacity = 0.3 + this.progress * 0.7;
 
-      this.portalGlow.material.opacity = portalOpacity * 0.4;
-      this.portalGlow.scale.x = 1 + portalProgress * 5;
-      this.portalGlow.position.z = pPos.z - 35;
+    const flareScale = 1 + this.progress * 8;
+    this.endLightFlare.scale.setScalar(flareScale);
+    this.endLightFlare.material.opacity = this.progress * 0.4;
 
-      // Increase fog density for whiteout transition
-      ctx.scene.fog.density = 0.08 - portalProgress * 0.06;
+    this.endPointLight.intensity = 0.5 + this.progress * 10;
+    this.endPointLight.distance = 30 + this.progress * 50;
+
+    // Last 4 seconds — approaching the light, everything washes white
+    if (t > 26) {
+      const washProgress = (t - 26) / 4; // 0 to 1
+      const wash = washProgress * washProgress; // ease in
+
+      // Fog fades to white
+      ctx.scene.fog.color.setRGB(wash, wash, wash);
+      ctx.renderer.setClearColor(
+        new THREE.Color(wash * 0.8, wash * 0.8, wash * 0.8)
+      );
+
+      // Increase ambient
+      this.ambient.intensity = 0.1 + wash * 2;
+      this.ambient.color.setRGB(1, 0.95, 0.85);
+
+      // Player glows brighter
+      ctx.player.light.intensity = 3 + wash * 15;
+
+      // Bloom ramps up — light overwhelms everything
+      if (ctx.bloomPass) {
+        ctx.bloomPass.strength = 1.8 + wash * 4;
+        ctx.bloomPass.radius = 0.6 + wash * 0.5;
+      }
     }
 
-    // Slowly increase player speed as section progresses
-    ctx.player.speed = 1.5 + this.progress * 2;
-
-    // Color shift over time — deep indigo to violet
-    const hue = 0.73 + Math.sin(t * 0.2) * 0.05;
-    ctx.player.mesh.material.emissive.setHSL(hue, 0.7, 0.2 + audio.energy * 0.3);
+    // Slowly accelerate — being pulled toward the light
+    ctx.player.speed = 3 + this.progress * 5;
   }
 
   exit(ctx) {
-    this.sacredRings = [];
-    this.floatingGeo = [];
-    this.mandala = null;
+    this.tunnelSegments = [];
+    this.tunnelMat = null;
     this.particles = null;
-    this.portalLight = null;
-    this.portalGlow = null;
+    this.endLight = null;
+    this.endLightFlare = null;
+    this.endPointLight = null;
+    this.rings = [];
     super.exit(ctx);
   }
 }
