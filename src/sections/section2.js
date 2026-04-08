@@ -82,6 +82,13 @@ export class Section2 extends SectionBase {
     // Score tracking
     this.dodged = 0;
     this.hit = 0;
+
+    // Melody blink state
+    this.lastNoteIndex = -1;
+    this.blinkFlash = 0; // 0-1, decays each frame
+
+    // Camera transition (tunnel → side view)
+    this.cameraTransitionDone = false;
   }
 
   enter(ctx) {
@@ -113,12 +120,9 @@ export class Section2 extends SectionBase {
     ctx.player.group.position.set(0, 0.5, 0);
     this.playerY = 0;
 
-    // TRUE side-view camera — looking from the side (along X axis)
-    // Player at Z=0, camera centered slightly ahead so player is ~1/3 from left
-    ctx.camera.position.set(16, 4, -4);
-    ctx.camera.fov = 55;
-    ctx.camera.updateProjectionMatrix();
-    ctx.camera.lookAt(0, 1, -4);
+    // Camera starts where Section 1 left off (behind player, tunnel view)
+    // Will transition to side view in the first ~3 seconds
+    // Don't override camera here — transition handles it in update()
 
     // Ambient
     this.ambient = new THREE.AmbientLight(0x222244, 0.5);
@@ -192,6 +196,7 @@ export class Section2 extends SectionBase {
     this.groundLine = new THREE.Mesh(groundGeo, groundMat);
     this.groundLine.rotation.y = Math.PI / 2; // face camera (rotates X→Z)
     this.groundLine.position.set(0, 0, 0);
+    this.groundLine.visible = false; // fades in during camera transition
     this.add(this.groundLine, ctx);
 
     // Secondary wider glow behind the ground line
@@ -448,12 +453,66 @@ export class Section2 extends SectionBase {
     ctx.player.mesh.rotation.z -= dt * this.scrollSpeed * 2;
     ctx.player.glowMesh.rotation.z -= dt * this.scrollSpeed * 1.5;
 
-    // ── Side-view camera — smoothly follow player vertically ──
-    ctx.camera.position.lerp(
-      new THREE.Vector3(16, 3.5 + this.playerY * 0.3, -4),
-      dt * 4
-    );
-    ctx.camera.lookAt(0, 1 + this.playerY * 0.2, -4);
+    // ── Melody blink — flash the ball on each note ──
+    // Find if a new note just triggered
+    for (let i = this.lastNoteIndex + 1; i < MELODY_NOTES.length; i++) {
+      if (songTime >= MELODY_NOTES[i][0]) {
+        this.lastNoteIndex = i;
+        this.blinkFlash = 1.0; // full flash
+      } else {
+        break;
+      }
+    }
+    // Decay the flash
+    if (this.blinkFlash > 0) {
+      this.blinkFlash = Math.max(0, this.blinkFlash - dt * 6); // fast decay ~0.17s
+      const b = this.blinkFlash;
+      // Scale up the player ball on flash
+      const pulseScale = 1 + b * 0.8;
+      ctx.player.mesh.scale.setScalar(pulseScale);
+      ctx.player.glowMesh.scale.setScalar(pulseScale * 1.1);
+      // Brighten the glow
+      ctx.player.light.intensity = 3 + b * 12;
+      ctx.player.glowMat.uniforms.uEnergy.value = 0.3 + b;
+      // Tint slightly toward the note color
+      const noteHue = this.lastNoteIndex >= 0 ? noteToHue(MELODY_NOTES[this.lastNoteIndex][1]) : 0;
+      const flashColor = new THREE.Color().setHSL(noteHue, 0.5, 0.8 + b * 0.2);
+      ctx.player.glowMat.uniforms.uColor.value.lerp(flashColor, b * 0.6);
+    } else {
+      ctx.player.mesh.scale.setScalar(1);
+      ctx.player.glowMesh.scale.setScalar(1);
+      ctx.player.light.intensity = 3;
+      ctx.player.glowMat.uniforms.uColor.value.lerp(new THREE.Color(1, 0.95, 0.85), dt * 3);
+    }
+
+    // ── Camera: transition from tunnel view → side view in first 3s ──
+    const TRANSITION_TIME = 3;
+    const targetPos = new THREE.Vector3(16, 3.5 + this.playerY * 0.3, -4);
+    const targetLook = new THREE.Vector3(0, 1 + this.playerY * 0.2, -4);
+
+    if (t < TRANSITION_TIME) {
+      // Smooth transition: tunnel (behind) → side view
+      const p = t / TRANSITION_TIME;
+      const ease = p * p * (3 - 2 * p); // smoothstep
+      // FOV narrows from wide tunnel (70) to platformer (55)
+      ctx.camera.fov = 70 - ease * 15;
+      ctx.camera.updateProjectionMatrix();
+      // Lerp faster as transition progresses
+      ctx.camera.position.lerp(targetPos, dt * (1 + ease * 5));
+      // Fade in ground after halfway through transition
+      if (ease > 0.4 && this.groundLine) {
+        this.groundLine.visible = true;
+        this.groundLine.material.opacity = (ease - 0.4) / 0.6 * 0.9;
+      }
+    } else {
+      if (!this.cameraTransitionDone) {
+        this.cameraTransitionDone = true;
+        ctx.camera.fov = 55;
+        ctx.camera.updateProjectionMatrix();
+      }
+      ctx.camera.position.lerp(targetPos, dt * 4);
+    }
+    ctx.camera.lookAt(targetLook.x, targetLook.y, targetLook.z);
 
     // ── Trigger orbs — drop EXACTLY on the beat, spawn ahead of player ──
     for (const orb of this.orbs) {
