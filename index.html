@@ -32,9 +32,10 @@
     /* Story text overlay */
     #story {
       position: fixed;
-      inset: 0;
+      top: 8%;
+      left: 0;
+      right: 0;
       display: flex;
-      align-items: center;
       justify-content: center;
       z-index: 5;
       pointer-events: none;
@@ -42,8 +43,9 @@
     #story-text {
       color: #fff;
       font-family: 'Georgia', serif;
-      font-size: 1.4rem;
-      letter-spacing: 0.15em;
+      font-size: 1.3rem;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
       text-align: center;
       opacity: 0;
       transition: opacity 2s ease;

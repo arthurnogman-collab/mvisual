@@ -131,8 +131,9 @@ export class Section1 extends SectionBase {
     // Story
     ctx.story.clear();
     ctx.story.schedule('...', 1, 3);
-    ctx.story.schedule('follow the light', 6, 4);
-    ctx.story.schedule('let go', 14, 3);
+    ctx.story.schedule('use arrow keys to move', 5, 3);
+    ctx.story.schedule('follow the light', 10, 4);
+    ctx.story.schedule('let go', 17, 3);
     ctx.story.schedule('you are almost there', 22, 3, 'bright');
     ctx.story.schedule('step into the light', 27, 3, 'bright');
 
@@ -365,8 +366,12 @@ export class Section1 extends SectionBase {
       this.ambient.intensity = 0.1 + wash * 2;
       this.ambient.color.setRGB(1, 0.95, 0.85);
 
-      // Player glows brighter
-      ctx.player.light.intensity = 3 + wash * 15;
+      // Player INVERTS — becomes a dark silhouette against the light
+      // The lonely dark ball floating in white
+      const invert = Math.min(wash * 1.5, 1); // goes dark faster than bg goes white
+      ctx.player.mesh.material.color.setRGB(1 - invert, 1 - invert, 1 - invert);
+      ctx.player.glowMat.uniforms.uColor.value.set(1 - invert * 0.9, 1 - invert * 0.9, 1 - invert * 0.85);
+      ctx.player.light.intensity = 3 * (1 - invert); // light fades as ball goes dark
 
       // Bloom ramps up — light overwhelms everything
       if (ctx.bloomPass) {
