@@ -12,9 +12,17 @@ import { Section1 } from './sections/section1.js';
 import { Section2 } from './sections/section2.js';
 
 // ── Core setup ──────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Force 720p internal resolution for performance (bloom is expensive at high res)
+const MAX_HEIGHT = 720;
+const scale = Math.min(1, MAX_HEIGHT / window.innerHeight);
+const renderW = Math.floor(window.innerWidth * scale);
+const renderH = Math.floor(window.innerHeight * scale);
+
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(renderW, renderH, false); // false = don't set CSS style
+renderer.domElement.style.width = '100%';
+renderer.domElement.style.height = '100%';
+renderer.setPixelRatio(1);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
@@ -28,7 +36,7 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 
 const bloomPass = new UnrealBloomPass(
-  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  new THREE.Vector2(renderW, renderH),
   1.5,   // strength — how much glow bleeds out
   0.4,   // radius — how far the glow spreads
   0.1    // threshold — how bright something needs to be to glow
@@ -36,10 +44,13 @@ const bloomPass = new UnrealBloomPass(
 composer.addPass(bloomPass);
 
 window.addEventListener('resize', () => {
+  const s = Math.min(1, MAX_HEIGHT / window.innerHeight);
+  const rw = Math.floor(window.innerWidth * s);
+  const rh = Math.floor(window.innerHeight * s);
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(rw, rh, false);
+  composer.setSize(rw, rh);
 });
 
 // ── Systems ─────────────────────────────────────────────────
@@ -66,7 +77,11 @@ overlay.addEventListener('click', async () => {
   setTimeout(() => overlay.remove(), 500);
 
   await audio.load('/music/dead5.mp3');
-  audio.play();
+
+  // Skip to a specific time via URL param: ?t=30 starts at 30s
+  const params = new URLSearchParams(window.location.search);
+  const startAt = parseFloat(params.get('t')) || 0;
+  audio.play(startAt);
   loop();
 });
 
@@ -87,4 +102,7 @@ function loop() {
 
   // Render through post-processing pipeline (bloom!)
   composer.render();
+
+  // Clear just-pressed flags after all systems have read them
+  input.flush();
 }

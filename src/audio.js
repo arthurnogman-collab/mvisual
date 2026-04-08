@@ -38,13 +38,13 @@ export class Audio {
     this.buffer = await this.ctx.decodeAudioData(arrayBuf);
   }
 
-  play() {
+  play(offset = 0) {
     if (this.playing) return;
     this.source = this.ctx.createBufferSource();
     this.source.buffer = this.buffer;
     this.source.connect(this.analyser);
-    this.source.start(0);
-    this.startedAt = this.ctx.currentTime;
+    this.source.start(0, offset); // start playback at `offset` seconds into the buffer
+    this.startedAt = this.ctx.currentTime - offset; // so currentTime returns correct song position
     this.playing = true;
   }
 

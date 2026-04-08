@@ -4,12 +4,12 @@ import { SectionBase } from './section-base.js';
 /**
  * SECTION 2 — "The Awakening" (0:30 – 1:00)
  *
- * 2D side-scrolling platformer. The ball rolls on a ground line.
- * Each melody note spawns a glowing neon orb exactly on beat.
- * Collect orbs by steering into them. Pure sync, pure neon.
+ * TRUE 2D side-scrolling platformer.
+ * Camera from the SIDE. Ball rolls on the ground.
+ * Each melody note = a neon orb falling from the sky, bouncing on the ground.
+ * Press SPACE to jump over them. They're obstacles, not collectibles.
  */
 
-// Music box notes — MIDI timings confirmed perfectly synced with MP3
 const MELODY_NOTES = [
   [30.000, 81], [30.234, 83], [30.469, 85], [30.703, 80],
   [33.750, 81], [33.984, 80], [34.219, 76], [34.453, 81],
@@ -31,18 +31,7 @@ function noteToHue(note) {
   return (note % 12) / 12;
 }
 
-// Higher pitch = higher Y position above ground
-function noteToHeight(note) {
-  return 0.8 + ((note - 70) / 25) * 4;
-}
-
-// Spread notes laterally — each note gets a position ahead
-function noteToAheadDist(index, total) {
-  // Notes within a phrase cluster together, phrases are spaced by silence
-  return 8 + index * 1.2;
-}
-
-// ─── Neon orb glow shader ───
+// ─── Neon orb shader ───
 const orbVertShader = `
   varying vec3 vNormal;
   varying vec3 vWorldPos;
@@ -64,17 +53,10 @@ const orbFragShader = `
     vec3 viewDir = normalize(cameraPosition - vWorldPos);
     float rim = 1.0 - abs(dot(viewDir, vNormal));
     rim = pow(rim, 1.5);
-
-    // Pulsing core
     float core = 0.6 + sin(uTime * 4.0) * 0.1 + uPulse * 0.3;
-
-    // Neon glow = bright center + rim glow
     float glow = core + rim * 1.2;
     vec3 col = uColor * glow;
-
-    // Hot white center
     col = mix(col, vec3(1.0), core * 0.3);
-
     float alpha = clamp(glow * 0.8, 0.0, 1.0);
     gl_FragColor = vec4(col, alpha);
   }
@@ -84,57 +66,68 @@ export class Section2 extends SectionBase {
   constructor() {
     super('the-awakening', 30, 60);
     this.orbs = [];
-    this.triggered = new Set();
-    this.collectEffects = [];
+    this.impactEffects = [];
     this.groundSegments = [];
     this.explosionLife = 0;
     this.explosionParticles = null;
     this.explosionVelocities = null;
-    this.scrollSpeed = 8; // units per second the world scrolls
+    this.scrollSpeed = 6;
+
+    // Jump state
+    this.jumpVelY = 0;
+    this.playerY = 0;
+    this.isGrounded = true;
+    this.jumpsLeft = 2; // double jump
+
+    // Score tracking
+    this.dodged = 0;
+    this.hit = 0;
   }
 
   enter(ctx) {
     super.enter(ctx);
 
-    // Start from white (inherited from S1 whiteout)
-    ctx.renderer.setClearColor(0xffffff);
-    ctx.scene.fog = new THREE.FogExp2(0x000005, 0.012);
+    // Dark background — explosion particles provide the white flash
+    ctx.renderer.setClearColor(0x000000);
+    ctx.scene.fog = new THREE.FogExp2(0x000005, 0.008);
 
     if (ctx.bloomPass) {
-      ctx.bloomPass.strength = 4.0;
-      ctx.bloomPass.radius = 1.0;
-      ctx.bloomPass.threshold = 0.05;
+      ctx.bloomPass.strength = 2.0;
+      ctx.bloomPass.radius = 0.6;
+      ctx.bloomPass.threshold = 0.1;
     }
 
     // Reset player
     ctx.player.mesh.material.color.setRGB(1, 1, 1);
     ctx.player.glowMat.uniforms.uColor.value.set(1.0, 0.95, 0.85);
     ctx.player.light.intensity = 5;
-    ctx.player.speed = 0; // we scroll the world instead
+    ctx.player.speed = 0;        // world scrolls, player stays
     ctx.player.posY = 0;
     ctx.player.laneX = 0;
     ctx.player.forwardZ = 0;
     ctx.player.boundsMode = 'rect';
-    ctx.player.boundsX = [-0.5, 0.5]; // minimal lateral movement
-    ctx.player.boundsY = [0, 5];
+    ctx.player.boundsX = [0, 0]; // locked X
+    ctx.player.boundsY = [0, 0]; // we handle Y with jump physics
 
-    // Fix player at a position — world moves past it
+    // Player position — on ground, left-ish side of screen
     ctx.player.group.position.set(0, 0.5, 0);
+    this.playerY = 0;
 
-    // Side-view camera for 2D feel
-    ctx.camera.position.set(0, 3, 14);
-    ctx.camera.fov = 45;
+    // TRUE side-view camera — looking from the side (along X axis)
+    // Player at Z=0, camera centered slightly ahead so player is ~1/3 from left
+    ctx.camera.position.set(16, 4, -4);
+    ctx.camera.fov = 55;
     ctx.camera.updateProjectionMatrix();
-    ctx.camera.lookAt(0, 2, 0);
+    ctx.camera.lookAt(0, 1, -4);
 
     // Ambient
     this.ambient = new THREE.AmbientLight(0x222244, 0.5);
     this.add(this.ambient, ctx);
 
-    // Story
+    // Story — "press space" shows IMMEDIATELY so player knows before orbs arrive
     ctx.story.clear();
-    ctx.story.schedule('you made it through', 31, 3, 'bright');
-    ctx.story.schedule('collect the melody', 36, 3);
+    ctx.story.schedule('press up to jump', 30, 4);
+    ctx.story.schedule('avoid the obstacles', 35, 3);
 
     ctx.score.show();
 
@@ -181,60 +174,72 @@ export class Section2 extends SectionBase {
     })), ctx);
 
     this.explosionVelocities = velocities;
-    this.explosionLife = 2.5;
+    this.explosionLife = 1.5;
   }
 
   _buildGround(ctx) {
-    // Glowing ground line — a long thin bright line
-    for (let i = 0; i < 6; i++) {
-      const geo = new THREE.PlaneGeometry(80, 0.04);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0x4466aa,
-        transparent: true,
-        opacity: 0.6,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-      const line = new THREE.Mesh(geo, mat);
-      line.rotation.x = -Math.PI / 2;
-      line.position.set(0, 0.01, -i * 80);
-      this.groundSegments.push(this.add(line, ctx));
-    }
+    // Main ground line — thin neon strip facing the camera, extending along Z
+    // PlaneGeometry(width=X, height=Y) then rotate 90° around Y so X→Z (long axis), Y stays (thin axis)
+    const groundGeo = new THREE.PlaneGeometry(600, 0.06);
+    const groundMat = new THREE.MeshBasicMaterial({
+      color: 0x4488cc,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.groundLine = new THREE.Mesh(groundGeo, groundMat);
+    this.groundLine.rotation.y = Math.PI / 2; // face camera (rotates X→Z)
+    this.groundLine.position.set(0, 0, 0);
+    this.add(this.groundLine, ctx);
 
-    // Subtle grid lines on ground for motion feel
+    // Secondary wider glow behind the ground line
+    const glowGeo = new THREE.PlaneGeometry(600, 0.25);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0x2244aa,
+      transparent: true,
+      opacity: 0.15,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const glowLine = new THREE.Mesh(glowGeo, glowMat);
+    glowLine.rotation.y = Math.PI / 2;
+    glowLine.position.set(0, 0, 0);
+    this.add(glowLine, ctx);
+
+    // Grid ticks — vertical bars on the ground, scroll to show movement
     for (let i = 0; i < 60; i++) {
-      const geo = new THREE.PlaneGeometry(6, 0.01);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0x223355,
+      const tickGeo = new THREE.PlaneGeometry(0.03, 0.5);
+      const tickMat = new THREE.MeshBasicMaterial({
+        color: 0x335577,
         transparent: true,
-        opacity: 0.25,
+        opacity: 0.4,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
       });
-      const tick = new THREE.Mesh(geo, mat);
-      tick.rotation.x = -Math.PI / 2;
-      tick.rotation.z = Math.PI / 2;
-      tick.position.set(0, 0.01, -i * 4);
+      const tick = new THREE.Mesh(tickGeo, tickMat);
+      tick.position.set(0, 0.25, -i * 4);
       tick.userData.isGridTick = true;
+      tick.userData.baseZ = -i * 4;
       this.groundSegments.push(this.add(tick, ctx));
     }
   }
 
   _buildBackground(ctx) {
-    // Distant particle layers for parallax depth
     const count = 400;
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
 
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = (Math.random() - 0.5) * 40;
-      positions[i * 3 + 1] = Math.random() * 15 + 1;
-      positions[i * 3 + 2] = -Math.random() * 100;
+      positions[i * 3] = (Math.random() - 0.5) * 20 - 10; // behind the scene
+      positions[i * 3 + 1] = Math.random() * 20 + 1;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 200;
 
       const hue = Math.random();
-      const c = new THREE.Color().setHSL(hue, 0.3, 0.25 + Math.random() * 0.15);
+      const c = new THREE.Color().setHSL(hue, 0.3, 0.2 + Math.random() * 0.15);
       colors[i * 3] = c.r;
       colors[i * 3 + 1] = c.g;
       colors[i * 3 + 2] = c.b;
@@ -255,20 +260,21 @@ export class Section2 extends SectionBase {
   }
 
   _prepareOrbs(ctx) {
-    // Pre-create ALL orbs at their correct positions
-    // The world scrolls toward the player, so orb Z = -(noteTime - 30) * scrollSpeed
-    // This way when worldOffset reaches that Z, the orb is at the player
+    // Each orb placed along Z axis. In side view, Z = left-right.
+    // Orb starts high (y=12), falls with gravity, bounces on ground.
+    // Player is at Z=0, orbs scroll toward them.
 
     this.orbs = MELODY_NOTES.map(([time, note], index) => {
       const hue = noteToHue(note);
       const color = new THREE.Color().setHSL(hue, 0.9, 0.6);
-      const height = noteToHeight(note);
 
-      // Position in world: Z based on time, Y based on pitch
-      const z = -((time - 30) * this.scrollSpeed);
+      // Z position: placed so that at trigger time (songTime=time), orb appears
+      // SPAWN_AHEAD units to the right of player, then scrolls toward them
+      const SPAWN_AHEAD = 10;
+      const z = -((time - 30) * this.scrollSpeed) - SPAWN_AHEAD;
 
-      // Neon orb with custom shader
-      const orbGeo = new THREE.IcosahedronGeometry(0.3, 3);
+      // Orb mesh with neon shader
+      const orbGeo = new THREE.IcosahedronGeometry(0.35, 3);
       const orbMat = new THREE.ShaderMaterial({
         vertexShader: orbVertShader,
         fragmentShader: orbFragShader,
@@ -287,12 +293,12 @@ export class Section2 extends SectionBase {
       const orbMesh = new THREE.Mesh(orbGeo, orbMat);
       group.add(orbMesh);
 
-      // Outer glow halo
-      const haloGeo = new THREE.IcosahedronGeometry(0.55, 2);
+      // Glow halo
+      const haloGeo = new THREE.IcosahedronGeometry(0.6, 2);
       const haloMat = new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.15,
+        opacity: 0.2,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.BackSide,
@@ -301,11 +307,12 @@ export class Section2 extends SectionBase {
       group.add(halo);
 
       // Point light
-      const light = new THREE.PointLight(color, 2, 6);
+      const light = new THREE.PointLight(color, 2, 8);
       group.add(light);
 
-      group.position.set(0, height, z);
-      group.visible = false; // hidden until note triggers
+      // Start high up — will fall with physics
+      group.position.set(0, 8, z);
+      group.visible = false;
 
       this.add(group, ctx);
 
@@ -313,8 +320,7 @@ export class Section2 extends SectionBase {
         time,
         note,
         index,
-        z,
-        height,
+        z,             // world Z position
         color,
         group,
         orbMesh,
@@ -322,8 +328,13 @@ export class Section2 extends SectionBase {
         halo,
         light,
         triggered: false,
-        collected: false,
-        triggerAge: 0,
+        collected: false,   // hit or passed
+        // Physics
+        velY: 0,
+        posY: 8,            // starts above screen
+        onGround: false,
+        bounceCount: 0,
+        orbRadius: 0.35,
       };
     });
   }
@@ -334,11 +345,14 @@ export class Section2 extends SectionBase {
     const t = this.localTime;
     const songTime = ctx.audio.currentTime;
     const audio = ctx.audio;
+    const GRAVITY = -25;
+    const GROUND_Y = 0.35; // orb radius — sits on ground
+    const PLAYER_RADIUS = 0.4;
 
-    // ── Explosion phase (first 2.5s) ──
+    // ── Explosion (first 2.5s) ──
     if (this.explosionLife > 0) {
       this.explosionLife -= dt;
-      const ep = 1 - this.explosionLife / 2.5;
+      const ep = 1 - this.explosionLife / 1.5;
 
       if (this.explosionParticles) {
         const pos = this.explosionParticles.geometry.attributes.position.array;
@@ -354,190 +368,254 @@ export class Section2 extends SectionBase {
         this.explosionParticles.material.opacity = Math.max(0, 1 - ep * 1.5);
       }
 
-      // White → dark transition
-      const fade = Math.min(ep * 2, 1);
-      const bg = 1 - fade;
-      ctx.renderer.setClearColor(new THREE.Color(bg * 0.9, bg * 0.9, bg));
-      ctx.scene.fog.color.setRGB(bg * 0.1, bg * 0.1, bg * 0.1);
-
+      // Bloom ramps down as explosion fades
       if (ctx.bloomPass) {
-        ctx.bloomPass.strength = 4.0 - fade * 2.2;
-        ctx.bloomPass.radius = 1.0 - fade * 0.5;
-        ctx.bloomPass.threshold = 0.05 + fade * 0.1;
+        ctx.bloomPass.strength = 2.0 - ep * 0.5;
+        ctx.bloomPass.radius = 0.6;
+        ctx.bloomPass.threshold = 0.1 + ep * 0.05;
       }
 
       if (this.explosionLife <= 0 && this.explosionParticles) {
         ctx.scene.remove(this.explosionParticles);
+        this.explosionParticles = null;
       }
     }
 
-    // ── World scrolling ──
-    // Everything moves toward the player (positive Z direction)
+    // ── Steady-state bloom (after explosion) ──
+    if (this.explosionLife <= 0 && ctx.bloomPass) {
+      ctx.bloomPass.strength = 1.2;
+      ctx.bloomPass.radius = 0.4;
+      ctx.bloomPass.threshold = 0.2;
+    }
+
+    // ── World scrolling — everything along Z ──
     const worldOffset = (songTime - 30) * this.scrollSpeed;
 
-    // Scroll ground
-    for (const seg of this.groundSegments) {
-      const scrolledZ = seg.position.z + worldOffset;
-      // Recycle segments that pass behind camera
-      if (seg.userData.isGridTick) {
-        // Just update visual position via group or offset
-      }
-    }
-
-    // Move all orb groups by world offset (orbs were placed at absolute positions)
+    // Scroll orbs
     for (const orb of this.orbs) {
       orb.group.position.z = orb.z + worldOffset;
     }
 
-    // Move ground segments
+    // Scroll ground — move each segment with world offset, recycle when past camera
     for (const seg of this.groundSegments) {
-      // Shift everything so the player stays at Z=0
-      // Ground was placed at various -Z; add worldOffset to scroll it
+      const worldZ = seg.userData.baseZ + worldOffset;
+      seg.position.z = worldZ;
+
+      // Recycle segments that scroll past the camera (off-screen right)
+      if (seg.userData.isGridTick) {
+        if (worldZ > 15) seg.userData.baseZ -= 240;
+      } else {
+        if (worldZ > 60) seg.userData.baseZ -= 480;
+      }
     }
 
-    // Actually, simpler: put everything in a world group
-    // But since we already placed things, let's just move the camera approach:
-    // Player is at Z=0, orbs have their Z. We add worldOffset to orb Z.
-    // Ground needs to tile. Let's just scroll ground segments too.
-
-    // Scroll background
+    // BG parallax
     if (this.bgStars) {
-      this.bgStars.position.z = worldOffset * 0.3; // parallax
+      this.bgStars.position.z = worldOffset * 0.15;
     }
 
-    // ── Player rolling on ground ──
-    // Ball spins based on scroll speed
-    ctx.player.mesh.rotation.x -= dt * this.scrollSpeed * 2;
-    ctx.player.glowMesh.rotation.x -= dt * this.scrollSpeed * 1.5;
-    ctx.player.group.position.y = 0.5; // on the ground
+    // ── Player jump physics ──
+    // Up arrow or space to jump (edge-detected for double jump)
+    if ((ctx.input.upDown || ctx.input.spaceDown) && this.jumpsLeft > 0) {
+      this.jumpVelY = 14;
+      this.isGrounded = false;
+      this.jumpsLeft--;
+    }
 
-    // Camera: side-ish view
+    // Gravity
+    if (!this.isGrounded) {
+      this.jumpVelY += GRAVITY * dt;
+      this.playerY += this.jumpVelY * dt;
+
+      if (this.playerY <= 0) {
+        this.playerY = 0;
+        this.jumpVelY = 0;
+        this.isGrounded = true;
+        this.jumpsLeft = 2; // reset double jump on landing
+      }
+    }
+
+    // Left/right movement (small lateral drift)
+    const lateralSpeed = 4;
+    if (ctx.input.left) this.playerX = Math.max((this.playerX || 0) - lateralSpeed * dt, -2);
+    if (ctx.input.right) this.playerX = Math.min((this.playerX || 0) + lateralSpeed * dt, 2);
+    if (!this.playerX) this.playerX = 0;
+
+    // Apply player position
+    ctx.player.group.position.set(this.playerX, this.playerY + 0.5, 0);
+
+    // Ball rolling spin (visual — around Z axis since we see from side)
+    ctx.player.mesh.rotation.z -= dt * this.scrollSpeed * 2;
+    ctx.player.glowMesh.rotation.z -= dt * this.scrollSpeed * 1.5;
+
+    // ── Side-view camera — smoothly follow player vertically ──
     ctx.camera.position.lerp(
-      new THREE.Vector3(ctx.player.laneX * 0.5, 3, 14),
-      dt * 3
+      new THREE.Vector3(16, 3.5 + this.playerY * 0.3, -4),
+      dt * 4
     );
-    ctx.camera.lookAt(0, 1.5, 0);
+    ctx.camera.lookAt(0, 1 + this.playerY * 0.2, -4);
 
-    // ── Trigger orbs on beat ──
+    // ── Trigger orbs — drop EXACTLY on the beat, spawn ahead of player ──
     for (const orb of this.orbs) {
+      // Trigger: orb appears and drops exactly when the note plays
       if (!orb.triggered && songTime >= orb.time) {
         orb.triggered = true;
         orb.group.visible = true;
-        orb.triggerAge = 0;
+        orb.posY = 8; // drop from above
+        orb.velY = 0;
       }
 
-      if (orb.triggered && !orb.collected) {
-        orb.triggerAge += dt;
+      if (!orb.triggered) continue;
 
-        // Animate: scale up from 0 on trigger (pop in)
-        const popScale = Math.min(orb.triggerAge * 6, 1);
-        const eased = 1 - Math.pow(1 - popScale, 3); // ease out cubic
-        orb.orbMesh.scale.setScalar(eased);
-        orb.halo.scale.setScalar(eased * 1.3 + Math.sin(songTime * 5 + orb.index) * 0.1);
+      // ── Orb falling physics — always runs, even after collected ──
+      orb.velY += GRAVITY * dt;
+      orb.posY += orb.velY * dt;
 
-        // Update shader
-        orb.orbMat.uniforms.uTime.value = songTime;
-        orb.orbMat.uniforms.uPulse.value = audio.mid;
+      // Bounce off ground
+      if (orb.posY <= GROUND_Y) {
+        orb.posY = GROUND_Y;
+        orb.bounceCount++;
+        // Damped bounce — each bounce lower
+        orb.velY = Math.abs(orb.velY) * Math.max(0.5 - orb.bounceCount * 0.1, 0.1);
 
-        // Light pulses
-        orb.light.intensity = 1.5 + audio.mid * 2;
-
-        // Rotation
-        orb.orbMesh.rotation.y += dt * 3;
-        orb.orbMesh.rotation.z += dt * 1.5;
-
-        // ── Collection check ──
-        const orbWorldPos = new THREE.Vector3();
-        orb.group.getWorldPosition(orbWorldPos);
-        const playerPos = ctx.player.group.position;
-        const dist = orbWorldPos.distanceTo(playerPos);
-
-        if (dist < 1.3) {
-          this._collectOrb(orb, ctx);
+        // Impact flash effect on first bounce
+        if (orb.bounceCount === 1) {
+          this._spawnImpact(orb, ctx);
         }
 
-        // Missed — scrolled past player
-        if (orb.group.position.z > 4) {
-          this._missOrb(orb, ctx);
+        // Stop bouncing after enough bounces
+        if (orb.bounceCount > 4) {
+          orb.velY = 0;
+          orb.posY = GROUND_Y;
         }
+      }
+
+      // Apply Y
+      orb.group.position.y = orb.posY;
+
+      // Visuals
+      orb.orbMat.uniforms.uTime.value = songTime;
+      orb.orbMat.uniforms.uPulse.value = audio.mid;
+      orb.orbMesh.rotation.y += dt * 3;
+      orb.orbMesh.rotation.x += dt * 2;
+      orb.halo.scale.setScalar(1.2 + Math.sin(songTime * 5 + orb.index) * 0.15);
+      orb.light.intensity = 1.5 + audio.mid * 2;
+
+      // Skip collision/scoring for already collected orbs
+      if (orb.collected) {
+        // Cleanup — far behind camera
+        if (orb.group.position.z > 20) {
+          orb.group.visible = false;
+        }
+        continue;
+      }
+
+      // ── Collision with player — only when orb is near the ground ──
+      const orbScreenZ = orb.group.position.z;
+      const playerZ = 0;
+      const dz = Math.abs(orbScreenZ - playerZ);
+      const dy = Math.abs(orb.posY - (this.playerY + 0.5)); // player Y includes the +0.5 offset
+      const collisionDist = PLAYER_RADIUS + orb.orbRadius;
+
+      // Only check collision when orb has bounced at least once (is near ground)
+      if (orb.bounceCount >= 1 && dz < collisionDist && dy < collisionDist) {
+        // HIT! Player didn't jump in time
+        this._hitByOrb(orb, ctx);
+      }
+
+      // Passed player — dodged successfully (only count after orb has landed)
+      if (orbScreenZ > 2 && !orb.collected && orb.bounceCount >= 1) {
+        orb.collected = true;
+        this.dodged++;
+        ctx.score.add(50); // reward for dodging
+      }
+
+      // Also mark as collected if orb went way past without landing (edge case)
+      if (orbScreenZ > 10 && !orb.collected) {
+        orb.collected = true;
       }
     }
 
-    // ── Update collect effects ──
-    for (let i = this.collectEffects.length - 1; i >= 0; i--) {
-      const fx = this.collectEffects[i];
+    // ── Impact effects ──
+    for (let i = this.impactEffects.length - 1; i >= 0; i--) {
+      const fx = this.impactEffects[i];
       fx.life -= dt;
       if (fx.life <= 0) {
         ctx.scene.remove(fx.particles);
-        this.collectEffects.splice(i, 1);
+        this.impactEffects.splice(i, 1);
         continue;
       }
       const p = 1 - fx.life / fx.maxLife;
-      fx.particles.material.opacity = (1 - p) * 0.9;
-      fx.particles.material.size = 0.1 + p * 0.05;
+      fx.particles.material.opacity = (1 - p) * 0.8;
       const pos = fx.particles.geometry.attributes.position.array;
       for (let j = 0; j < pos.length; j += 3) {
         pos[j] += fx.velocities[j] * dt;
-        fx.velocities[j + 1] -= 4 * dt; // gravity
+        fx.velocities[j + 1] -= 8 * dt;
         pos[j + 1] += fx.velocities[j + 1] * dt;
         pos[j + 2] += fx.velocities[j + 2] * dt;
+        if (pos[j + 1] < 0.02) {
+          pos[j + 1] = 0.02;
+          fx.velocities[j + 1] *= -0.2;
+        }
       }
       fx.particles.geometry.attributes.position.needsUpdate = true;
     }
-
-    // Scroll speed stays constant for clean sync
-    this.scrollSpeed = 8;
   }
 
-  _collectOrb(orb, ctx) {
-    orb.collected = true;
-    orb.group.visible = false;
-    ctx.score.add(100);
-
-    // Neon burst — particles fly up and out in the orb's color
-    const count = 35;
+  _spawnImpact(orb, ctx) {
+    // Ground impact burst when orb first hits the floor
+    const count = 25;
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
-    const wp = new THREE.Vector3();
-    orb.group.getWorldPosition(wp);
+    const z = orb.group.position.z;
 
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = wp.x;
-      positions[i * 3 + 1] = wp.y;
-      positions[i * 3 + 2] = wp.z;
-      const a = Math.random() * Math.PI * 2;
-      const upBias = 2 + Math.random() * 4;
-      velocities[i * 3] = Math.cos(a) * (1 + Math.random() * 3);
-      velocities[i * 3 + 1] = upBias;
-      velocities[i * 3 + 2] = Math.sin(a) * (1 + Math.random() * 3);
+      positions[i * 3] = 0;
+      positions[i * 3 + 1] = 0.1;
+      positions[i * 3 + 2] = z;
+
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1 + Math.random() * 4;
+      velocities[i * 3] = Math.cos(angle) * speed * 0.5;
+      velocities[i * 3 + 1] = 1 + Math.random() * 3; // upward spray
+      velocities[i * 3 + 2] = Math.sin(angle) * speed;
     }
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const mat = new THREE.PointsMaterial({
-      size: 0.1,
+      size: 0.08,
       color: orb.color,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.8,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
     const particles = new THREE.Points(geo, mat);
     ctx.scene.add(particles);
-    this.collectEffects.push({ particles, velocities, life: 1.2, maxLife: 1.2 });
+    this.impactEffects.push({ particles, velocities, life: 0.8, maxLife: 0.8 });
   }
 
-  _missOrb(orb, ctx) {
+  _hitByOrb(orb, ctx) {
     orb.collected = true;
-    orb.group.visible = false;
+    this.hit++;
     ctx.score.breakCombo();
+
+    // Flash the player red briefly
+    ctx.player.mesh.material.color.setRGB(1, 0.2, 0.2);
+    setTimeout(() => {
+      ctx.player.mesh.material.color.setRGB(1, 1, 1);
+    }, 200);
+
+    // Small burst
+    this._spawnImpact(orb, ctx);
   }
 
   exit(ctx) {
-    for (const fx of this.collectEffects) {
+    for (const fx of this.impactEffects) {
       ctx.scene.remove(fx.particles);
     }
-    this.collectEffects = [];
+    this.impactEffects = [];
     this.orbs = [];
     this.groundSegments = [];
     this.explosionParticles = null;

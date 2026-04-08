@@ -100,6 +100,11 @@ export class Section1 extends SectionBase {
     this.endLightFlare = null;
     this.tunnelMat = null;
     this.rings = [];
+    this.pathPoints = [];   // sacred path waypoints
+    this.pathMesh = null;
+    this.pathGlowMesh = null;
+    this.pathOrbs = [];     // collectible orbs along the path
+    this.pathHue = 0;       // cycling hue for path color
   }
 
   enter(ctx) {
@@ -134,15 +139,18 @@ export class Section1 extends SectionBase {
     ctx.story.clear();
     ctx.story.schedule('...', 1, 3);
     ctx.story.schedule('use arrow keys to move', 5, 3);
-    ctx.story.schedule('follow the light', 10, 4);
+    ctx.story.schedule('follow the sacred path', 10, 4);
     ctx.story.schedule('let go', 17, 3);
     ctx.story.schedule('you are almost there', 22, 3, 'bright');
     ctx.story.schedule('step into the light', 27, 3, 'bright');
+
+    ctx.score.show();
 
     this._buildTunnel(ctx);
     this._buildSacredRings(ctx);
     this._buildParticles(ctx);
     this._buildEndLight(ctx);
+    this._buildSacredPath(ctx);
   }
 
   _buildTunnel(ctx) {
@@ -259,6 +267,84 @@ export class Section1 extends SectionBase {
     this.add(this.endPointLight, ctx);
   }
 
+  _buildSacredPath(ctx) {
+    // A curving glowing sacred line that snakes through the tunnel.
+    // Small collectible orbs placed along it — stay near the path to score.
+    const POINTS = 200;
+    const PATH_LENGTH = 160; // Z extent
+    const positions = [];
+
+    for (let i = 0; i < POINTS; i++) {
+      const t = i / POINTS;
+      const z = -t * PATH_LENGTH;
+      // Sacred sine curves — slow, flowing, not chaotic
+      const x = Math.sin(t * Math.PI * 4) * 1.8 + Math.sin(t * Math.PI * 7) * 0.6;
+      const y = Math.cos(t * Math.PI * 3) * 1.2 + Math.sin(t * Math.PI * 5.5) * 0.4 + 0.5;
+      positions.push(new THREE.Vector3(x, y, z));
+    }
+    this.pathPoints = positions;
+
+    // Main glowing path line
+    const curve = new THREE.CatmullRomCurve3(positions);
+    const tubeGeo = new THREE.TubeGeometry(curve, POINTS * 2, 0.025, 6, false);
+    const tubeMat = new THREE.MeshBasicMaterial({
+      color: 0x8866ff,
+      transparent: true,
+      opacity: 0.6,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.pathMesh = this.add(new THREE.Mesh(tubeGeo, tubeMat), ctx);
+
+    // Wider soft glow tube around it
+    const glowGeo = new THREE.TubeGeometry(curve, POINTS, 0.12, 6, false);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0x6644cc,
+      transparent: true,
+      opacity: 0.12,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.pathGlowMesh = this.add(new THREE.Mesh(glowGeo, glowMat), ctx);
+
+    // Small collectible orbs along the path every ~4 units
+    for (let i = 0; i < POINTS; i += 8) {
+      const p = positions[i];
+      const orbGeo = new THREE.IcosahedronGeometry(0.08, 2);
+      const orbMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.7,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const orb = new THREE.Mesh(orbGeo, orbMat);
+      orb.position.copy(p);
+      this.add(orb, ctx);
+      this.pathOrbs.push({
+        mesh: orb,
+        basePos: p.clone(),
+        collected: false,
+        index: i,
+      });
+    }
+  }
+
+  /** Find nearest path point to a position (for proximity scoring) */
+  _nearestPathDist(pos) {
+    let minDist = Infinity;
+    // Only check points near the player's Z to save perf
+    for (const p of this.pathPoints) {
+      const dz = Math.abs(p.z - pos.z);
+      if (dz > 10) continue;
+      const dx = p.x - pos.x;
+      const dy = p.y - pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < minDist) minDist = dist;
+    }
+    return minDist;
+  }
+
   update(dt, ctx) {
     super.update(dt, ctx);
 
@@ -353,6 +439,54 @@ export class Section1 extends SectionBase {
     this.endPointLight.intensity = 0.5 + this.progress * 10;
     this.endPointLight.distance = 30 + this.progress * 50;
 
+    // ── Sacred path — color cycling, orb collection, proximity scoring ──
+    this.pathHue += dt * 0.08; // slow hue cycle
+    if (this.pathMesh) {
+      const hue = (this.pathHue % 1 + 1) % 1;
+      const pathColor = new THREE.Color().setHSL(hue, 0.7, 0.5);
+      this.pathMesh.material.color.copy(pathColor);
+      this.pathGlowMesh.material.color.copy(pathColor);
+      // Pulse opacity with music energy
+      this.pathMesh.material.opacity = 0.4 + audio.energy * 0.4;
+      this.pathGlowMesh.material.opacity = 0.08 + audio.energy * 0.1;
+    }
+
+    // Proximity scoring — closer to path = more points
+    const pathDist = this._nearestPathDist(pPos);
+    if (pathDist < 1.5 && t > 3) {
+      // Score ticks while near the path (small amounts, continuous)
+      this._pathScoreTimer = (this._pathScoreTimer || 0) + dt;
+      if (this._pathScoreTimer > 0.5) { // every 0.5s near the path
+        this._pathScoreTimer = 0;
+        ctx.score.add(10);
+      }
+    }
+
+    // Collect orbs along the path
+    for (const orb of this.pathOrbs) {
+      if (orb.collected) continue;
+
+      // Bob and spin
+      orb.mesh.position.y = orb.basePos.y + Math.sin(t * 3 + orb.index * 0.5) * 0.1;
+      orb.mesh.rotation.y += dt * 2;
+
+      // Color matches path
+      if (this.pathMesh) {
+        orb.mesh.material.color.copy(this.pathMesh.material.color);
+      }
+
+      // Check collection — player touches orb
+      const dx = orb.mesh.position.x - pPos.x;
+      const dy = orb.mesh.position.y - pPos.y;
+      const dz = orb.mesh.position.z - pPos.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < 0.8) {
+        orb.collected = true;
+        orb.mesh.visible = false;
+        ctx.score.add(25);
+      }
+    }
+
     // Player starts going dark at 22s — silhouette emerges before whiteout
     if (t > 22) {
       const darkProgress = Math.min((t - 22) / 4, 1); // 22s-26s: ball goes dark
@@ -407,6 +541,10 @@ export class Section1 extends SectionBase {
     this.endLightFlare = null;
     this.endPointLight = null;
     this.rings = [];
+    this.pathPoints = [];
+    this.pathMesh = null;
+    this.pathGlowMesh = null;
+    this.pathOrbs = [];
     super.exit(ctx);
   }
 }
