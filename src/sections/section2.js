@@ -74,6 +74,9 @@ export class Section2 extends SectionBase {
     ctx.player.speed = 6;
     ctx.player.posY = 0;
     ctx.player.laneX = 0;
+    ctx.player.boundsMode = 'rect';
+    ctx.player.boundsX = [-4, 4];
+    ctx.player.boundsY = [0, 5];
 
     // Ambient
     this.ambient = new THREE.AmbientLight(0x334466, 0.6);
@@ -227,14 +230,21 @@ export class Section2 extends SectionBase {
 
   _spawnNoteFountain(noteData, ctx) {
     const pPos = ctx.player.group.position;
+    const songTime = ctx.audio.currentTime;
     const color = new THREE.Color().setHSL(noteData.hue, 0.7, 0.6);
+
+    // Calculate where the player will BE when this note hits
+    // so the orb arrives at the player position exactly on beat
+    const timeUntilNote = noteData.time - songTime;
+    const currentSpeed = ctx.player.speed;
+    const distancePlayerWillTravel = currentSpeed * timeUntilNote;
 
     // Each fountain is a particle system that erupts upward then falls
     const count = 40;
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
     const spawnX = (Math.sin(noteData.index * 1.7 + noteData.note * 0.4) * 3);
-    const spawnZ = pPos.z - 30;
+    const spawnZ = pPos.z - distancePlayerWillTravel; // player will be here on beat
     const spawnY = 0.2;
 
     for (let i = 0; i < count; i++) {
@@ -293,11 +303,16 @@ export class Section2 extends SectionBase {
       spawnX,
       spawnY,
       spawnZ,
+      noteTime: noteData.time, // exact beat time
+      erupted: false,          // fountain starts when beat hits
       age: 0,
       color,
       collected: false,
-      gravity: -8, // particles fall back down
+      gravity: -8,
     };
+
+    // Hide fountain particles until the beat actually hits
+    particles.visible = false;
 
     noteData.fountain = fountain;
     noteData.spawned = true;
@@ -378,37 +393,47 @@ export class Section2 extends SectionBase {
 
     // ── Spawn note fountains ──
     for (const nd of this.noteQueue) {
-      if (!nd.spawned && songTime >= nd.time - 1.5) {
+      if (!nd.spawned && songTime >= nd.time - 3) {
         this._spawnNoteFountain(nd, ctx);
       }
     }
 
     // ── Update note fountains ──
     for (const f of this.noteFountains) {
-      f.age += dt;
-
-      // Animate fountain particles — gravity pulls them down
-      const pos = f.particles.geometry.attributes.position.array;
-      for (let i = 0; i < pos.length; i += 3) {
-        pos[i] += f.velocities[i] * dt;
-        f.velocities[i + 1] += f.gravity * dt; // gravity
-        pos[i + 1] += f.velocities[i + 1] * dt;
-        pos[i + 2] += f.velocities[i + 2] * dt;
-
-        // Particles that hit "ground" bounce slightly
-        if (pos[i + 1] < 0.05) {
-          pos[i + 1] = 0.05;
-          f.velocities[i + 1] *= -0.3; // damped bounce
-        }
+      // Fountain erupts exactly when the beat hits
+      if (!f.erupted && songTime >= f.noteTime) {
+        f.erupted = true;
+        f.particles.visible = true;
+        f.age = 0;
       }
-      f.particles.geometry.attributes.position.needsUpdate = true;
 
-      // Fountain particles fade over time
-      f.particles.material.opacity = Math.max(0, 0.9 - f.age * 0.2);
+      // Only animate particles after eruption
+      if (f.erupted) {
+        f.age += dt;
+
+        // Animate fountain particles — gravity pulls them down
+        const pos = f.particles.geometry.attributes.position.array;
+        for (let i = 0; i < pos.length; i += 3) {
+          pos[i] += f.velocities[i] * dt;
+          f.velocities[i + 1] += f.gravity * dt; // gravity
+          pos[i + 1] += f.velocities[i + 1] * dt;
+          pos[i + 2] += f.velocities[i + 2] * dt;
+
+          // Particles that hit "ground" bounce slightly
+          if (pos[i + 1] < 0.05) {
+            pos[i + 1] = 0.05;
+            f.velocities[i + 1] *= -0.3; // damped bounce
+          }
+        }
+        f.particles.geometry.attributes.position.needsUpdate = true;
+
+        // Fountain particles fade over time
+        f.particles.material.opacity = Math.max(0, 0.9 - f.age * 0.25);
+      }
 
       // Orb floats and pulses
       if (!f.collected && f.orbMesh) {
-        f.orbMesh.position.y = f.spawnY + noteToY(0) + Math.sin(songTime * 3 + f.spawnX) * 0.2;
+        f.orbMesh.position.y += Math.sin(songTime * 3 + f.spawnX) * dt * 0.3;
         f.orbMesh.rotation.y += dt * 2;
 
         // Pulse glow with audio

@@ -116,8 +116,10 @@ export class Section1 extends SectionBase {
       ctx.bloomPass.threshold = 0.15;
     }
 
-    // Player setup
+    // Player setup — constrained to tunnel
     ctx.player.speed = 3;
+    ctx.player.boundsMode = 'circle';
+    ctx.player.boundsRadius = 3.5; // tunnel radius is 4, keep player inside
     ctx.player.glowMat.uniforms.uColor.value.set(0.9, 0.9, 1.0);
 
     // Camera — close behind player, looking forward
@@ -351,7 +353,25 @@ export class Section1 extends SectionBase {
     this.endPointLight.intensity = 0.5 + this.progress * 10;
     this.endPointLight.distance = 30 + this.progress * 50;
 
-    // Last 4 seconds — approaching the light, everything washes white
+    // Player starts going dark at 22s — silhouette emerges before whiteout
+    if (t > 22) {
+      const darkProgress = Math.min((t - 22) / 4, 1); // 22s-26s: ball goes dark
+      const dp = darkProgress * darkProgress; // ease in
+
+      // Player INVERTS — becomes a dark silhouette
+      ctx.player.mesh.material.color.setRGB(1 - dp, 1 - dp, 1 - dp);
+      // Kill the glow shader — make it dim/transparent so the dark core shows
+      ctx.player.glowMat.uniforms.uColor.value.set(
+        0.1 + (1 - dp) * 0.8,
+        0.1 + (1 - dp) * 0.8,
+        0.1 + (1 - dp) * 0.75
+      );
+      ctx.player.light.intensity = 3 * (1 - dp);
+      // Scale up the dark ball slightly so it's more prominent
+      ctx.player.mesh.scale.setScalar(1 + dp * 0.5);
+    }
+
+    // Last 4 seconds — world washes white around the dark ball
     if (t > 26) {
       const washProgress = (t - 26) / 4; // 0 to 1
       const wash = washProgress * washProgress; // ease in
@@ -359,24 +379,19 @@ export class Section1 extends SectionBase {
       // Fog fades to white
       ctx.scene.fog.color.setRGB(wash, wash, wash);
       ctx.renderer.setClearColor(
-        new THREE.Color(wash * 0.8, wash * 0.8, wash * 0.8)
+        new THREE.Color(wash * 0.9, wash * 0.9, wash * 0.9)
       );
 
-      // Increase ambient
-      this.ambient.intensity = 0.1 + wash * 2;
-      this.ambient.color.setRGB(1, 0.95, 0.85);
+      // Increase ambient — world becomes bright
+      this.ambient.intensity = 0.1 + wash * 3;
+      this.ambient.color.setRGB(1, 0.98, 0.9);
 
-      // Player INVERTS — becomes a dark silhouette against the light
-      // The lonely dark ball floating in white
-      const invert = Math.min(wash * 1.5, 1); // goes dark faster than bg goes white
-      ctx.player.mesh.material.color.setRGB(1 - invert, 1 - invert, 1 - invert);
-      ctx.player.glowMat.uniforms.uColor.value.set(1 - invert * 0.9, 1 - invert * 0.9, 1 - invert * 0.85);
-      ctx.player.light.intensity = 3 * (1 - invert); // light fades as ball goes dark
-
-      // Bloom ramps up — light overwhelms everything
+      // Bloom ramps up — but NOT too much, we want the dark ball visible
       if (ctx.bloomPass) {
-        ctx.bloomPass.strength = 1.8 + wash * 4;
-        ctx.bloomPass.radius = 0.6 + wash * 0.5;
+        ctx.bloomPass.strength = 1.8 + wash * 2;
+        ctx.bloomPass.radius = 0.6 + wash * 0.3;
+        // Raise threshold so dark ball doesn't get bloomed away
+        ctx.bloomPass.threshold = 0.15 + wash * 0.4;
       }
     }
 

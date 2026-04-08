@@ -129,6 +129,12 @@ export class Player {
     this.forwardZ = 0;
     this.breathPhase = 0;
     this.elapsed = 0;
+
+    // Movement bounds — sections can override these
+    this.boundsX = [-3, 3];
+    this.boundsY = [0, 4];
+    this.boundsMode = 'rect'; // 'rect' or 'circle'
+    this.boundsRadius = 3;    // for circle mode (tunnel)
   }
 
   buildSphere() {
@@ -175,13 +181,28 @@ export class Player {
     const lateralSpeed = 4;
     if (input.left)  this.laneX -= lateralSpeed * dt;
     if (input.right) this.laneX += lateralSpeed * dt;
-    this.laneX = THREE.MathUtils.clamp(this.laneX, -3, 3);
 
     // Vertical movement
     const vertSpeed = 3;
     if (input.up)   this.posY += vertSpeed * dt;
     if (input.down) this.posY -= vertSpeed * dt;
-    this.posY = THREE.MathUtils.clamp(this.posY, 0, 4);
+
+    // Apply bounds
+    if (this.boundsMode === 'circle') {
+      // Circular tunnel bounds — clamp to radius from center (0, 0.5)
+      const dx = this.laneX;
+      const dy = this.posY - 0; // center Y of tunnel
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const maxR = this.boundsRadius - 0.5; // leave room for player size
+      if (dist > maxR) {
+        const scale = maxR / dist;
+        this.laneX = dx * scale;
+        this.posY = dy * scale;
+      }
+    } else {
+      this.laneX = THREE.MathUtils.clamp(this.laneX, this.boundsX[0], this.boundsX[1]);
+      this.posY = THREE.MathUtils.clamp(this.posY, this.boundsY[0], this.boundsY[1]);
+    }
 
     // Forward movement
     this.forwardZ -= this.speed * dt;
