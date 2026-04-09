@@ -30,9 +30,16 @@ export class Input {
 
     // ── Mouse listeners ──
     window.addEventListener('mousemove', (e) => {
-      // Normalize to -1..+1 based on window center
-      this.mouseX = (e.clientX / window.innerWidth) * 2 - 1;
-      this.mouseY = -((e.clientY / window.innerHeight) * 2 - 1); // flip Y
+      if (document.pointerLockElement) {
+        // Pointer locked: accumulate deltas into virtual position
+        this.mouseX += e.movementX / (window.innerWidth * 0.5);
+        this.mouseY -= e.movementY / (window.innerHeight * 0.5);
+        this.mouseX = Math.max(-1, Math.min(1, this.mouseX));
+        this.mouseY = Math.max(-1, Math.min(1, this.mouseY));
+      } else {
+        this.mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+        this.mouseY = -((e.clientY / window.innerHeight) * 2 - 1);
+      }
     });
 
     window.addEventListener('mousedown', (e) => {

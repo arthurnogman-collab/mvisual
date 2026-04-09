@@ -188,7 +188,7 @@ export class Section4 extends SectionBase {
     this.sun.add(this.sunHalo);
 
     ctx.story.clear();
-    ctx.story.schedule('KILL THE MONSTERS', START + 1, 4, 'bright');
+    ctx.story.schedule('RIGHT CLICK TO SLAY THE MONSTERS', START + 1, 4, 'bright');
 
     ctx.score.show();
 

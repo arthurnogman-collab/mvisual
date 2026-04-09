@@ -191,6 +191,17 @@ overlay.addEventListener('click', async () => {
   overlay.style.opacity = '0';
   setTimeout(() => overlay.remove(), 500);
 
+  // Go fullscreen + lock pointer so mouse can't leave
+  document.documentElement.requestFullscreen().catch(() => {});
+  renderer.domElement.requestPointerLock().catch(() => {});
+
+  // Re-lock pointer if user clicks canvas after Escape
+  renderer.domElement.addEventListener('click', () => {
+    if (!document.pointerLockElement) {
+      renderer.domElement.requestPointerLock().catch(() => {});
+    }
+  });
+
   // Skip to a specific time via URL param: ?t=0 starts from beginning
   const params = new URLSearchParams(window.location.search);
   const tParam = params.get('t');

@@ -131,7 +131,7 @@ export class Section2 extends SectionBase {
 
     // Story — instructions show during the camera transition, before orbs arrive
     ctx.story.clear();
-    ctx.story.schedule('AVOID THE BALLS', 28, 4, 'bright');
+    ctx.story.schedule('CLICK TO DODGE THE BALLS', 28, 4, 'bright');
 
     ctx.score.show();
 
