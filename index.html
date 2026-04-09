@@ -96,6 +96,12 @@
 <body>
   <div id="overlay"><span>CLICK TO ENTER</span></div>
   <div id="story"><div id="story-text"></div></div>
+  <script>
+    if (/Mobi|Android|iPhone|iPad|iPod|webOS|BlackBerry|Opera Mini|IEMobile/i.test(navigator.userAgent) || ('ontouchstart' in window && window.innerWidth < 1024)) {
+      document.getElementById('overlay').innerHTML = '<span style="animation:none;opacity:0.9;font-size:1.1rem;text-align:center;line-height:2">SORRY<br>DESKTOP ONLY</span>';
+      document.getElementById('overlay').style.cursor = 'default';
+    }
+  </script>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

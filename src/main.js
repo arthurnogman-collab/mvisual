@@ -171,6 +171,9 @@ const ctx = { scene, camera, renderer, composer, bloomPass, crtPass, player, aud
 
 // ── Click to start ──────────────────────────────────────────
 const overlay = document.getElementById('overlay');
+const isMobile = /Mobi|Android|iPhone|iPad|iPod|webOS|BlackBerry|Opera Mini|IEMobile/i.test(navigator.userAgent)
+  || ('ontouchstart' in window && window.innerWidth < 1024);
+if (isMobile) throw new Error('Mobile not supported');
 
 overlay.addEventListener('click', async () => {
   const label = overlay.querySelector('span');
