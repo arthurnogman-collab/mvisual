@@ -174,18 +174,31 @@ export class Player {
     this.group.add(this.light);
   }
 
-  update(dt, input, audio) {
+  update(dt, input, audio, score) {
     this.elapsed += dt;
 
-    // Lateral movement
+    // Lateral movement (analog mouse or keyboard)
     const lateralSpeed = 4;
-    if (input.left)  this.laneX -= lateralSpeed * dt;
-    if (input.right) this.laneX += lateralSpeed * dt;
+    const move = input.moveAmount;
+    if (move !== 0) {
+      this.laneX += move * lateralSpeed * dt;
+    } else {
+      if (input.left)  this.laneX -= lateralSpeed * dt;
+      if (input.right) this.laneX += lateralSpeed * dt;
+    }
 
-    // Vertical movement
+    // Vertical movement (mouse Y in tunnel mode, keyboard fallback)
     const vertSpeed = 3;
-    if (input.up)   this.posY += vertSpeed * dt;
-    if (input.down) this.posY -= vertSpeed * dt;
+    if (this.boundsMode === 'circle' && Math.abs(input.mouseY) > 0.08) {
+      // In tunnel, mouse Y controls vertical
+      const my = input.mouseY;
+      const sign = Math.sign(my);
+      const amount = sign * Math.min(1, (Math.abs(my) - 0.08) / 0.92);
+      this.posY += amount * vertSpeed * dt;
+    } else {
+      if (input.up)   this.posY += vertSpeed * dt;
+      if (input.down) this.posY -= vertSpeed * dt;
+    }
 
     // Apply bounds
     if (this.boundsMode === 'circle') {
@@ -215,15 +228,43 @@ export class Player {
     this.glowMat.uniforms.uEnergy.value = audio.energy;
     this.glowMat.uniforms.uBass.value = audio.bass;
 
-    // Breathing scale
+    // ── Score-driven ball visuals ──
+    const sf = score ? score.flash : 0;      // 0-1, positive score flash
+    const hf = score ? score.hitFlash : 0;   // 0-1, red hit flash
+
+    // Breathing + score pulse scale
     this.breathPhase += dt * 1.5;
     const breathScale = 1 + Math.sin(this.breathPhase) * 0.08;
     const audioScale = 1 + audio.energy * 0.5;
-    const s = breathScale * audioScale;
+    const scoreScale = 1 + sf * 0.6; // ball grows on score
+    const s = breathScale * audioScale * scoreScale;
     this.glowMesh.scale.setScalar(s);
+    this.mesh.scale.setScalar(scoreScale);
 
-    // Light intensity from audio
-    this.light.intensity = 2 + audio.energy * 5 + audio.bass * 3;
+    // Color shift on score — PURPLE glow on good, RED blink on bad
+    if (sf > 0 && score) {
+      // Purple signal on positive scoring
+      const purpleColor = new THREE.Color(0.7, 0.1, 1.0);
+      this.glowMat.uniforms.uColor.value.lerp(purpleColor, sf * 0.8);
+      this.mesh.material.color.lerp(new THREE.Color(0.8, 0.3, 1.0), sf * 0.6);
+      this.glowMat.uniforms.uEnergy.value = audio.energy + sf * 2.0;
+      this.light.color.lerp(new THREE.Color(0.6, 0.1, 1.0), sf * 0.5);
+      this.light.intensity = 2 + audio.energy * 5 + sf * 12;
+    } else if (hf > 0) {
+      // Red blink on hit/miss — aggressive flashing
+      const blinkPhase = Math.sin(this.elapsed * 30) > 0 ? 1 : 0.3;
+      const hitColor = new THREE.Color(1, 0.05, 0.05);
+      this.glowMat.uniforms.uColor.value.lerp(hitColor, hf * blinkPhase);
+      this.mesh.material.color.lerp(hitColor, hf * blinkPhase * 0.7);
+      this.light.color.lerp(new THREE.Color(1, 0, 0), hf * 0.6);
+      this.light.intensity = 2 + hf * 8 * blinkPhase;
+    } else {
+      // Restore to default
+      this.glowMat.uniforms.uColor.value.lerp(new THREE.Color(0.9, 0.9, 1.0), dt * 3);
+      this.mesh.material.color.lerp(new THREE.Color(1, 1, 1), dt * 5);
+      this.light.color.lerp(new THREE.Color(0.93, 0.93, 1.0), dt * 3);
+      this.light.intensity = 2 + audio.energy * 5 + audio.bass * 3;
+    }
 
     // Core subtle rotation
     this.mesh.rotation.y += dt * 0.3;

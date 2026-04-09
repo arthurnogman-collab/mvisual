@@ -93,7 +93,7 @@ const tunnelFragmentShader = `
 
 export class Section1 extends SectionBase {
   constructor() {
-    super('the-tunnel', 0, 30);
+    super('the-tunnel', 0, 27);
     this.tunnelSegments = [];
     this.particles = null;
     this.endLight = null;
@@ -114,15 +114,15 @@ export class Section1 extends SectionBase {
     ctx.scene.fog = new THREE.FogExp2(0x000000, 0.02);
     ctx.renderer.setClearColor(0x000000);
 
-    // Bloom — ethereal glow for the tunnel
+    // Bloom — subtle glow for the tunnel
     if (ctx.bloomPass) {
-      ctx.bloomPass.strength = 1.8;
-      ctx.bloomPass.radius = 0.6;
+      ctx.bloomPass.strength = 1.0;
+      ctx.bloomPass.radius = 0.4;
       ctx.bloomPass.threshold = 0.15;
     }
 
-    // Player setup — constrained to tunnel
-    ctx.player.speed = 3;
+    // Player setup — constrained to tunnel, fast pace
+    ctx.player.speed = 10;
     ctx.player.boundsMode = 'circle';
     ctx.player.boundsRadius = 3.5; // tunnel radius is 4, keep player inside
     ctx.player.glowMat.uniforms.uColor.value.set(0.9, 0.9, 1.0);
@@ -138,11 +138,11 @@ export class Section1 extends SectionBase {
     // Story
     ctx.story.clear();
     ctx.story.schedule('...', 1, 3);
-    ctx.story.schedule('use arrow keys to move', 5, 3);
+    ctx.story.schedule('move to navigate', 5, 3);
     ctx.story.schedule('follow the sacred path', 10, 4);
-    ctx.story.schedule('let go', 17, 3);
-    ctx.story.schedule('you are almost there', 22, 3, 'bright');
-    ctx.story.schedule('step into the light', 27, 3, 'bright');
+    ctx.story.schedule('let go', 14, 3);
+    ctx.story.schedule('you are almost there', 18, 3, 'bright');
+    ctx.story.schedule('step into the light', 23, 3, 'bright');
 
     ctx.score.show();
 
@@ -155,8 +155,8 @@ export class Section1 extends SectionBase {
 
   _buildTunnel(ctx) {
     // Long tunnel made of cylinder segments
-    const segmentLength = 30;
-    const segmentCount = 6;
+    const segmentLength = 40;
+    const segmentCount = 10;
     const radius = 4;
 
     this.tunnelMat = new THREE.ShaderMaterial({
@@ -270,8 +270,8 @@ export class Section1 extends SectionBase {
   _buildSacredPath(ctx) {
     // A curving glowing sacred line that snakes through the tunnel.
     // Small collectible orbs placed along it — stay near the path to score.
-    const POINTS = 200;
-    const PATH_LENGTH = 160; // Z extent
+    const POINTS = 300;
+    const PATH_LENGTH = 350; // Z extent — longer tunnel, faster speed
     const positions = [];
 
     for (let i = 0; i < POINTS; i++) {
@@ -487,9 +487,9 @@ export class Section1 extends SectionBase {
       }
     }
 
-    // Player starts going dark at 22s — silhouette emerges before whiteout
-    if (t > 22) {
-      const darkProgress = Math.min((t - 22) / 4, 1); // 22s-26s: ball goes dark
+    // Player starts going dark at 19s — silhouette emerges before whiteout
+    if (t > 19) {
+      const darkProgress = Math.min((t - 19) / 4, 1); // 19s-23s: ball goes dark
       const dp = darkProgress * darkProgress; // ease in
 
       // Player INVERTS — becomes a dark silhouette
@@ -506,8 +506,8 @@ export class Section1 extends SectionBase {
     }
 
     // Last 4 seconds — world washes white around the dark ball
-    if (t > 26) {
-      const washProgress = (t - 26) / 4; // 0 to 1
+    if (t > 23) {
+      const washProgress = Math.min((t - 23) / 4, 1); // 23s-27s
       const wash = washProgress * washProgress; // ease in
 
       // Fog fades to white
@@ -522,15 +522,15 @@ export class Section1 extends SectionBase {
 
       // Bloom ramps up — but NOT too much, we want the dark ball visible
       if (ctx.bloomPass) {
-        ctx.bloomPass.strength = 1.8 + wash * 2;
-        ctx.bloomPass.radius = 0.6 + wash * 0.3;
+        ctx.bloomPass.strength = 1.0 + wash * 1.5;
+        ctx.bloomPass.radius = 0.4 + wash * 0.2;
         // Raise threshold so dark ball doesn't get bloomed away
         ctx.bloomPass.threshold = 0.15 + wash * 0.4;
       }
     }
 
     // Slowly accelerate — being pulled toward the light
-    ctx.player.speed = 3 + this.progress * 5;
+    ctx.player.speed = 10 + this.progress * 12;
   }
 
   exit(ctx) {

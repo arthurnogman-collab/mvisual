@@ -25,10 +25,14 @@ export class Audio {
   async load(url) {
     this.ctx = new AudioContext();
 
+    this.gainNode = this.ctx.createGain();
+    this.gainNode.gain.value = 1;
+
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 2048;
     this.analyser.smoothingTimeConstant = 0.8;
-    this.analyser.connect(this.ctx.destination);
+    this.analyser.connect(this.gainNode);
+    this.gainNode.connect(this.ctx.destination);
 
     this.freqData = new Uint8Array(this.analyser.frequencyBinCount);
     this.waveData = new Uint8Array(this.analyser.fftSize);

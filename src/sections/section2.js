@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SectionBase } from './section-base.js';
+import { getScene } from '../preloader.js';
 
 /**
  * SECTION 2 — "The Awakening" (0:30 – 1:00)
@@ -64,7 +65,7 @@ const orbFragShader = `
 
 export class Section2 extends SectionBase {
   constructor() {
-    super('the-awakening', 30, 60);
+    super('the-awakening', 27, 60);
     this.orbs = [];
     this.impactEffects = [];
     this.groundSegments = [];
@@ -77,7 +78,7 @@ export class Section2 extends SectionBase {
     this.jumpVelY = 0;
     this.playerY = 0;
     this.isGrounded = true;
-    this.jumpsLeft = 2; // double jump
+    this.jumpsLeft = 3; // triple jump
 
     // Score tracking
     this.dodged = 0;
@@ -94,14 +95,14 @@ export class Section2 extends SectionBase {
   enter(ctx) {
     super.enter(ctx);
 
-    // Dark background — explosion particles provide the white flash
-    ctx.renderer.setClearColor(0x000000);
-    ctx.scene.fog = new THREE.FogExp2(0x000005, 0.008);
+    // Start with white (continuing from Section 1 whiteout) — transition fades to dark
+    ctx.renderer.setClearColor(0xe5e5e5);
+    ctx.scene.fog = new THREE.FogExp2(0x888888, 0.025);
 
     if (ctx.bloomPass) {
-      ctx.bloomPass.strength = 2.0;
-      ctx.bloomPass.radius = 0.6;
-      ctx.bloomPass.threshold = 0.1;
+      ctx.bloomPass.strength = 2.5;
+      ctx.bloomPass.radius = 0.5;
+      ctx.bloomPass.threshold = 0.4;
     }
 
     // Reset player
@@ -128,16 +129,17 @@ export class Section2 extends SectionBase {
     this.ambient = new THREE.AmbientLight(0x222244, 0.5);
     this.add(this.ambient, ctx);
 
-    // Story — "press space" shows IMMEDIATELY so player knows before orbs arrive
+    // Story — instructions show during the camera transition, before orbs arrive
     ctx.story.clear();
-    ctx.story.schedule('press up to jump', 30, 4);
-    ctx.story.schedule('avoid the obstacles', 35, 3);
+    ctx.story.schedule('click to jump', 28, 3);
+    ctx.story.schedule('avoid the obstacles', 31, 3);
 
     ctx.score.show();
 
     this._buildExplosion(ctx);
     this._buildGround(ctx);
     this._buildBackground(ctx);
+    this._buildTrees(ctx);
     this._prepareOrbs(ctx);
   }
 
@@ -182,54 +184,148 @@ export class Section2 extends SectionBase {
   }
 
   _buildGround(ctx) {
-    // Main ground line — thin neon strip facing the camera, extending along Z
-    // PlaneGeometry(width=X, height=Y) then rotate 90° around Y so X→Z (long axis), Y stays (thin axis)
-    const groundGeo = new THREE.PlaneGeometry(600, 0.06);
-    const groundMat = new THREE.MeshBasicMaterial({
-      color: 0x4488cc,
+    // ── Synthwave wireframe grid ground ──
+    // Wide flat plane with grid lines extending to the horizon
+
+    // Solid dark ground plane
+    const floorGeo = new THREE.PlaneGeometry(40, 600);
+    const floorMat = new THREE.MeshBasicMaterial({
+      color: 0x050510,
       transparent: true,
-      opacity: 0.9,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
+      opacity: 0.95,
       side: THREE.DoubleSide,
     });
-    this.groundLine = new THREE.Mesh(groundGeo, groundMat);
-    this.groundLine.rotation.y = Math.PI / 2; // face camera (rotates X→Z)
-    this.groundLine.position.set(0, 0, 0);
-    this.groundLine.visible = false; // fades in during camera transition
-    this.add(this.groundLine, ctx);
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(0, -0.01, 0);
+    this.add(floor, ctx);
 
-    // Secondary wider glow behind the ground line
-    const glowGeo = new THREE.PlaneGeometry(600, 0.25);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: 0x2244aa,
+    // Wireframe grid overlay — synthwave style, bright and visible
+    const gridMat = new THREE.LineBasicMaterial({
+      color: 0x4488ff,
+      transparent: true,
+      opacity: 0.7,
+      blending: THREE.AdditiveBlending,
+    });
+
+    // Z-lines (running along the road) — perspective lines
+    const zLineSpacing = 2;
+    const zLineCount = 21; // -20 to +20
+    for (let i = 0; i < zLineCount; i++) {
+      const x = (i - Math.floor(zLineCount / 2)) * zLineSpacing;
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(x, 0, 100),
+        new THREE.Vector3(x, 0, -300),
+      ]);
+      this.add(new THREE.Line(geo, gridMat), ctx);
+    }
+
+    // X-lines (cross lines, scroll with world) — the moving grid ticks
+    const xLineSpacing = 3;
+    const xLineCount = 120;
+    this.gridLines = [];
+    const xLineMat = new THREE.LineBasicMaterial({
+      color: 0x6699ff,
+      transparent: true,
+      opacity: 0.6,
+      blending: THREE.AdditiveBlending,
+    });
+    for (let i = 0; i < xLineCount; i++) {
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-20, 0, 0),
+        new THREE.Vector3(20, 0, 0),
+      ]);
+      const line = new THREE.Line(geo, xLineMat.clone());
+      line.position.z = -i * xLineSpacing;
+      line.userData.baseZ = -i * xLineSpacing;
+      this.gridLines.push(this.add(line, ctx));
+    }
+
+    // Center neon line — the main ground line
+    const centerGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0.01, 100),
+      new THREE.Vector3(0, 0.01, -300),
+    ]);
+    const centerMat = new THREE.LineBasicMaterial({
+      color: 0x00ccff,
+      transparent: true,
+      opacity: 0.9,
+    });
+    this.groundLine = this.add(new THREE.Line(centerGeo, centerMat), ctx);
+    this.groundLine.visible = false; // fades in during camera transition
+
+    // Horizon glow
+    const horizonGeo = new THREE.PlaneGeometry(60, 0.5);
+    const horizonMat = new THREE.MeshBasicMaterial({
+      color: 0xff2266,
       transparent: true,
       opacity: 0.15,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const glowLine = new THREE.Mesh(glowGeo, glowMat);
-    glowLine.rotation.y = Math.PI / 2;
-    glowLine.position.set(0, 0, 0);
-    this.add(glowLine, ctx);
+    const horizon = new THREE.Mesh(horizonGeo, horizonMat);
+    horizon.position.set(0, 0.5, -200);
+    this.add(horizon, ctx);
 
-    // Grid ticks — vertical bars on the ground, scroll to show movement
-    for (let i = 0; i < 60; i++) {
-      const tickGeo = new THREE.PlaneGeometry(0.03, 0.5);
-      const tickMat = new THREE.MeshBasicMaterial({
-        color: 0x335577,
-        transparent: true,
-        opacity: 0.4,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
+    // Keep groundSegments for scroll recycling compatibility
+    this.groundSegments = this.gridLines;
+  }
+
+  _buildTrees(ctx) {
+    this.trees = [];
+
+    const modelPaths = [
+      '/models/environment/Trees.glb',
+      '/models/environment/Pine Trees.glb',
+      '/models/environment/Birch Trees.glb',
+      '/models/environment/Dead Trees.glb',
+      '/models/environment/Maple Trees.glb',
+    ];
+
+    const templateData = [];
+    for (const p of modelPaths) {
+      const s = getScene(p);
+      if (!s) continue;
+      const box = new THREE.Box3().setFromObject(s);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      templateData.push({ scene: s, center, minY: box.min.y });
+    }
+    if (templateData.length === 0) return;
+
+    const TREE_COUNT = 6;
+    const SPAN = 50;
+    const spacing = SPAN / TREE_COUNT;
+
+    for (let i = 0; i < TREE_COUNT; i++) {
+      const td = templateData[i % templateData.length];
+      const inner = td.scene.clone();
+
+      inner.position.set(-td.center.x, -td.minY, -td.center.z);
+
+      const group = new THREE.Group();
+      group.add(inner);
+
+      const baseZ = -(SPAN / 2) + (i + 0.5) * spacing + (Math.random() - 0.5) * spacing * 0.3;
+      const x = -1 - Math.random() * 2;
+      const scale = 1.0 + Math.random() * 0.8;
+
+      group.scale.setScalar(scale);
+      group.position.set(x, 0, baseZ);
+      group.rotation.y = Math.random() * Math.PI * 2;
+
+      inner.traverse((child) => {
+        if (child.isMesh) {
+          child.material = new THREE.MeshBasicMaterial({
+            color: 0x5599dd, wireframe: true,
+            transparent: true, opacity: 0.75,
+          });
+        }
       });
-      const tick = new THREE.Mesh(tickGeo, tickMat);
-      tick.position.set(0, 0.25, -i * 4);
-      tick.userData.isGridTick = true;
-      tick.userData.baseZ = -i * 4;
-      this.groundSegments.push(this.add(tick, ctx));
+
+      this.add(group, ctx);
+      this.trees.push({ model: group, baseZ, span: SPAN });
     }
   }
 
@@ -298,12 +394,12 @@ export class Section2 extends SectionBase {
       const orbMesh = new THREE.Mesh(orbGeo, orbMat);
       group.add(orbMesh);
 
-      // Glow halo
-      const haloGeo = new THREE.IcosahedronGeometry(0.6, 2);
+      // Glow halo (no point light — perf)
+      const haloGeo = new THREE.IcosahedronGeometry(0.6, 1);
       const haloMat = new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.2,
+        opacity: 0.25,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.BackSide,
@@ -311,13 +407,14 @@ export class Section2 extends SectionBase {
       const halo = new THREE.Mesh(haloGeo, haloMat);
       group.add(halo);
 
-      // Point light
-      const light = new THREE.PointLight(color, 2, 8);
-      group.add(light);
+      // Vary drop height and initial force per orb
+      const dropHeight = 6 + Math.random() * 6;        // 6-12 units high
+      const throwForce = -2 + Math.random() * 4;        // slight random initial Y velocity
+      const sizeVariation = 0.8 + Math.random() * 0.5;  // 0.8x - 1.3x size
 
-      // Start high up — will fall with physics
-      group.position.set(0, 8, z);
+      group.position.set(0, dropHeight, z);
       group.visible = false;
+      group.scale.setScalar(sizeVariation);
 
       this.add(group, ctx);
 
@@ -331,15 +428,16 @@ export class Section2 extends SectionBase {
         orbMesh,
         orbMat,
         halo,
-        light,
         triggered: false,
         collected: false,   // hit or passed
-        // Physics
-        velY: 0,
-        posY: 8,            // starts above screen
+        // Physics — varied per orb
+        velY: throwForce,
+        posY: dropHeight,
+        dropHeight,
         onGround: false,
         bounceCount: 0,
-        orbRadius: 0.35,
+        orbRadius: 0.35 * sizeVariation,
+        restitution: 0.75 + Math.random() * 0.2, // 0.75-0.95 bounciness
       };
     });
   }
@@ -388,9 +486,9 @@ export class Section2 extends SectionBase {
 
     // ── Steady-state bloom (after explosion) ──
     if (this.explosionLife <= 0 && ctx.bloomPass) {
-      ctx.bloomPass.strength = 1.2;
-      ctx.bloomPass.radius = 0.4;
-      ctx.bloomPass.threshold = 0.2;
+      ctx.bloomPass.strength = 0.8;
+      ctx.bloomPass.radius = 0.3;
+      ctx.bloomPass.threshold = 0.3;
     }
 
     // ── World scrolling — everything along Z ──
@@ -401,19 +499,21 @@ export class Section2 extends SectionBase {
       orb.group.position.z = orb.z + worldOffset;
     }
 
-    // Scroll ground — move each segment with world offset, recycle when past camera
-    for (const seg of this.groundSegments) {
-      const worldZ = seg.userData.baseZ + worldOffset;
-      seg.position.z = worldZ;
-
-      // Recycle segments that scroll past the camera (off-screen right)
-      if (seg.userData.isGridTick) {
-        if (worldZ > 15) seg.userData.baseZ -= 240;
-      } else {
-        if (worldZ > 60) seg.userData.baseZ -= 480;
-      }
+    // Scroll grid cross-lines with world offset, recycle when past camera
+    for (const line of this.groundSegments) {
+      const worldZ = line.userData.baseZ + worldOffset;
+      line.position.z = worldZ;
+      if (worldZ > 15) line.userData.baseZ -= 360; // recycle far ahead
     }
 
+    // Scroll trees with world — same speed as ground so they stay planted
+    for (const tree of this.trees || []) {
+      let worldZ = tree.baseZ + worldOffset;
+      while (worldZ > 30) { tree.baseZ -= tree.span; worldZ -= tree.span; }
+      while (worldZ < -30) { tree.baseZ += tree.span; worldZ += tree.span; }
+      tree.model.position.z = worldZ;
+    }
+    
     // BG parallax
     if (this.bgStars) {
       this.bgStars.position.z = worldOffset * 0.15;
@@ -436,14 +536,19 @@ export class Section2 extends SectionBase {
         this.playerY = 0;
         this.jumpVelY = 0;
         this.isGrounded = true;
-        this.jumpsLeft = 2; // reset double jump on landing
+        this.jumpsLeft = 3; // reset triple jump on landing
       }
     }
 
-    // Left/right movement (small lateral drift)
+    // Left/right movement (analog mouse or keyboard)
     const lateralSpeed = 4;
-    if (ctx.input.left) this.playerX = Math.max((this.playerX || 0) - lateralSpeed * dt, -2);
-    if (ctx.input.right) this.playerX = Math.min((this.playerX || 0) + lateralSpeed * dt, 2);
+    const move = ctx.input.moveAmount;
+    if (move !== 0) {
+      this.playerX = Math.max(-2, Math.min(2, (this.playerX || 0) + move * lateralSpeed * dt));
+    } else {
+      if (ctx.input.left) this.playerX = Math.max((this.playerX || 0) - lateralSpeed * dt, -2);
+      if (ctx.input.right) this.playerX = Math.min((this.playerX || 0) + lateralSpeed * dt, 2);
+    }
     if (!this.playerX) this.playerX = 0;
 
     // Apply player position
@@ -485,7 +590,7 @@ export class Section2 extends SectionBase {
       ctx.player.glowMat.uniforms.uColor.value.lerp(new THREE.Color(1, 0.95, 0.85), dt * 3);
     }
 
-    // ── Camera: transition from tunnel view → side view in first 3s ──
+    // ── Camera: transition from whited-out tunnel → side view (27s-30s, before melody) ──
     const TRANSITION_TIME = 3;
     const targetPos = new THREE.Vector3(16, 3.5 + this.playerY * 0.3, -4);
     const targetLook = new THREE.Vector3(0, 1 + this.playerY * 0.2, -4);
@@ -494,21 +599,66 @@ export class Section2 extends SectionBase {
       // Smooth transition: tunnel (behind) → side view
       const p = t / TRANSITION_TIME;
       const ease = p * p * (3 - 2 * p); // smoothstep
+
+      // White background fades to black during transition
+      const whiteFade = 1 - ease;
+      ctx.renderer.setClearColor(new THREE.Color(whiteFade * 0.9, whiteFade * 0.9, whiteFade * 0.9));
+      ctx.scene.fog = new THREE.FogExp2(
+        new THREE.Color(whiteFade * 0.5, whiteFade * 0.5, whiteFade * 0.5 + (1 - whiteFade) * 0.02),
+        0.008 + whiteFade * 0.02
+      );
+
+      // Bloom comes down from the whiteout
+      if (ctx.bloomPass) {
+        ctx.bloomPass.strength = 2.5 - ease * 1.7; // 2.5 → 0.8
+        ctx.bloomPass.radius = 0.5 - ease * 0.2;
+        ctx.bloomPass.threshold = 0.4 - ease * 0.1;
+      }
+
       // FOV narrows from wide tunnel (70) to platformer (55)
       ctx.camera.fov = 70 - ease * 15;
       ctx.camera.updateProjectionMatrix();
       // Lerp faster as transition progresses
       ctx.camera.position.lerp(targetPos, dt * (1 + ease * 5));
+
+      // Player restores from dark silhouette back to bright
+      const restoreP = Math.min(p * 2, 1); // restore in first half of transition
+      ctx.player.mesh.material.color.setRGB(restoreP, restoreP, restoreP);
+      ctx.player.mesh.scale.setScalar(1.5 - restoreP * 0.5);
+      ctx.player.light.intensity = restoreP * 5;
+
       // Fade in ground after halfway through transition
-      if (ease > 0.4 && this.groundLine) {
+      if (ease > 0.3 && this.groundLine) {
         this.groundLine.visible = true;
-        this.groundLine.material.opacity = (ease - 0.4) / 0.6 * 0.9;
+        this.groundLine.material.opacity = (ease - 0.3) / 0.7 * 0.9;
+        // Also fade in the grid cross-lines
+        for (const line of this.gridLines || []) {
+          line.material.opacity = (ease - 0.3) / 0.7 * 0.4;
+        }
       }
     } else {
       if (!this.cameraTransitionDone) {
         this.cameraTransitionDone = true;
         ctx.camera.fov = 55;
         ctx.camera.updateProjectionMatrix();
+        ctx.renderer.setClearColor(0x000000);
+        ctx.scene.fog = new THREE.FogExp2(0x000005, 0.008);
+        // Ensure ground is visible (in case we skipped the transition)
+        if (this.groundLine) {
+          this.groundLine.visible = true;
+          this.groundLine.material.opacity = 0.9;
+        }
+        for (const line of this.gridLines || []) {
+          line.material.opacity = 0.4;
+        }
+        // Ensure player is restored
+        ctx.player.mesh.material.color.setRGB(1, 1, 1);
+        ctx.player.mesh.scale.setScalar(1);
+        ctx.player.light.intensity = 5;
+        // Snap camera if we jumped past transition
+        if (t > TRANSITION_TIME + 1) {
+          ctx.camera.position.copy(targetPos);
+        }
       }
       ctx.camera.position.lerp(targetPos, dt * 4);
     }
@@ -520,8 +670,8 @@ export class Section2 extends SectionBase {
       if (!orb.triggered && songTime >= orb.time) {
         orb.triggered = true;
         orb.group.visible = true;
-        orb.posY = 8; // drop from above
-        orb.velY = 0;
+        orb.posY = orb.dropHeight;
+        // Keep the pre-assigned varied velY (throwForce)
       }
 
       if (!orb.triggered) continue;
@@ -530,22 +680,25 @@ export class Section2 extends SectionBase {
       orb.velY += GRAVITY * dt;
       orb.posY += orb.velY * dt;
 
-      // Bounce off ground
+      // Bounce off ground — dense, energetic material, keeps bouncing
       if (orb.posY <= GROUND_Y) {
         orb.posY = GROUND_Y;
         orb.bounceCount++;
-        // Damped bounce — each bounce lower
-        orb.velY = Math.abs(orb.velY) * Math.max(0.5 - orb.bounceCount * 0.1, 0.1);
+        // Per-orb restitution — some bounce higher than others
+        orb.velY = Math.abs(orb.velY) * Math.max(orb.restitution - orb.bounceCount * 0.03, 0.4);
 
         // Impact flash effect on first bounce
         if (orb.bounceCount === 1) {
           this._spawnImpact(orb, ctx);
         }
 
-        // Stop bouncing after enough bounces
-        if (orb.bounceCount > 4) {
-          orb.velY = 0;
-          orb.posY = GROUND_Y;
+        // Never fully settle — minimum bounce velocity varies by orb
+        const minBounce = 3 + orb.restitution * 3; // 5.25 - 5.85
+        if (orb.velY < minBounce) orb.velY = minBounce;
+
+        // After many bounces, steady rhythmic bounce
+        if (orb.bounceCount > 8) {
+          orb.velY = minBounce + 1;
         }
       }
 
@@ -558,7 +711,8 @@ export class Section2 extends SectionBase {
       orb.orbMesh.rotation.y += dt * 3;
       orb.orbMesh.rotation.x += dt * 2;
       orb.halo.scale.setScalar(1.2 + Math.sin(songTime * 5 + orb.index) * 0.15);
-      orb.light.intensity = 1.5 + audio.mid * 2;
+      // Pulse halo opacity with audio
+      orb.halo.material.opacity = 0.2 + audio.mid * 0.15;
 
       // Skip collision/scoring for already collected orbs
       if (orb.collected) {
@@ -660,11 +814,7 @@ export class Section2 extends SectionBase {
     this.hit++;
     ctx.score.breakCombo();
 
-    // Flash the player red briefly
-    ctx.player.mesh.material.color.setRGB(1, 0.2, 0.2);
-    setTimeout(() => {
-      ctx.player.mesh.material.color.setRGB(1, 1, 1);
-    }, 200);
+    // Red flash handled by score.hitFlash → player.update
 
     // Small burst
     this._spawnImpact(orb, ctx);
@@ -677,6 +827,7 @@ export class Section2 extends SectionBase {
     this.impactEffects = [];
     this.orbs = [];
     this.groundSegments = [];
+    this.gridLines = [];
     this.explosionParticles = null;
     this.bgStars = null;
     super.exit(ctx);

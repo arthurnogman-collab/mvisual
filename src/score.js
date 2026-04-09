@@ -1,15 +1,23 @@
 /**
- * Score system + HUD — tracks points, displays score with style.
- * Includes floating "+50" popups that animate upward and fade.
+ * Score system + HUD — the player ball IS the score feedback.
+ * When scoring, the ball pulses bigger and shifts color.
+ * Sections read score.flash to drive player ball visuals.
+ * Score number rolls up in the HUD with a satisfying counter effect.
  */
 export class Score {
   constructor() {
     this.value = 0;
-    this.displayValue = 0; // smoothly animates toward value
+    this.displayValue = 0;
     this.combo = 0;
     this.maxCombo = 0;
 
-    // Create HUD elements
+    // Flash state — sections read these to drive ball visuals
+    this.flash = 0;          // 0-1, decays each frame. Sections scale ball by this.
+    this.flashHue = 0.5;     // hue of the current flash color
+    this.hitFlash = 0;       // 0-1, red flash on miss
+    this.lastEarned = 0;     // last points earned (for display)
+
+    // Create HUD
     this.container = document.createElement('div');
     this.container.id = 'hud';
     this.container.innerHTML = `
@@ -18,12 +26,6 @@ export class Score {
     `;
     document.body.appendChild(this.container);
 
-    // Floating popup container
-    this.popupContainer = document.createElement('div');
-    this.popupContainer.id = 'score-popups';
-    document.body.appendChild(this.popupContainer);
-
-    // Style
     const style = document.createElement('style');
     style.textContent = `
       #hud {
@@ -35,65 +37,37 @@ export class Score {
         text-align: right;
       }
       #hud-score {
-        font-family: 'Georgia', serif;
+        font-family: 'Orbitron', monospace;
         font-size: 1.8rem;
-        color: #fff;
+        font-weight: 700;
+        color: #0ff;
         opacity: 0;
-        letter-spacing: 0.1em;
-        text-shadow: 0 0 15px rgba(255,255,255,0.3);
+        letter-spacing: 0.15em;
+        text-shadow: 0 0 10px rgba(0,255,255,0.5), 0 0 30px rgba(0,255,255,0.2);
         transition: opacity 1s ease;
       }
-      #hud-score.visible { opacity: 0.7; }
+      #hud-score.visible { opacity: 0.85; }
       #hud-combo {
-        font-family: 'Georgia', serif;
+        font-family: 'Orbitron', monospace;
         font-size: 0.9rem;
-        color: rgba(255,220,150,0.8);
+        color: rgba(0,255,200,0.8);
         letter-spacing: 0.15em;
         margin-top: 4px;
         opacity: 0;
         transition: opacity 0.3s ease;
       }
       #hud-combo.visible { opacity: 1; }
-      #hud-score.flash {
-        text-shadow: 0 0 30px rgba(255,255,255,0.8), 0 0 60px rgba(255,200,100,0.4);
-      }
-      #score-popups {
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
-        z-index: 6;
-        overflow: hidden;
-      }
-      .score-popup {
-        position: absolute;
-        font-family: 'Georgia', serif;
-        font-size: 1.2rem;
-        letter-spacing: 0.1em;
+      #hud-score.pulse {
         color: #fff;
-        text-shadow: 0 0 10px rgba(255,255,255,0.5), 0 0 20px rgba(100,200,255,0.3);
-        animation: scoreFloat 1.2s ease-out forwards;
-        pointer-events: none;
+        text-shadow: 0 0 15px rgba(0,255,255,0.9), 0 0 40px rgba(0,255,255,0.5), 0 0 80px rgba(0,100,255,0.3);
+        transform: scale(1.15);
+        transition: transform 0.1s ease-out, color 0.1s, text-shadow 0.1s;
       }
-      .score-popup.hit {
-        color: #ff4444;
-        text-shadow: 0 0 10px rgba(255,50,50,0.5);
-      }
-      @keyframes scoreFloat {
-        0% {
-          opacity: 1;
-          transform: translateY(0) scale(1.2);
-        }
-        30% {
-          opacity: 1;
-          transform: translateY(-20px) scale(1);
-        }
-        100% {
-          opacity: 0;
-          transform: translateY(-60px) scale(0.8);
-        }
+      #hud-score.hit {
+        color: #f44;
+        text-shadow: 0 0 15px rgba(255,50,50,0.8), 0 0 40px rgba(255,0,0,0.3);
+        transform: scale(0.95);
+        transition: transform 0.05s, color 0.05s, text-shadow 0.05s;
       }
     `;
     document.head.appendChild(style);
@@ -103,7 +77,6 @@ export class Score {
     this.visible = false;
   }
 
-  /** Show the HUD (called when gameplay starts) */
   show() {
     if (!this.visible) {
       this.visible = true;
@@ -111,14 +84,13 @@ export class Score {
     }
   }
 
-  /** Hide the HUD */
   hide() {
     this.visible = false;
     this.scoreEl.classList.remove('visible');
     this.comboEl.classList.remove('visible');
   }
 
-  /** Add points (with combo multiplier) — spawns floating popup */
+  /** Add points — triggers ball flash + score pulse + floating number */
   add(points) {
     this.combo++;
     if (this.combo > this.maxCombo) this.maxCombo = this.combo;
@@ -126,10 +98,17 @@ export class Score {
     const multiplier = Math.min(1 + Math.floor(this.combo / 5) * 0.5, 4);
     const earned = Math.round(points * multiplier);
     this.value += earned;
+    this.lastEarned = earned;
 
-    // Flash effect
-    this.scoreEl.classList.add('flash');
-    setTimeout(() => this.scoreEl.classList.remove('flash'), 200);
+    // Ball flash — intensity scales with combo
+    this.flash = Math.min(0.5 + this.combo * 0.05, 1.0);
+    // Hue cycles through the rainbow as combo builds
+    this.flashHue = (this.flashHue + 0.08) % 1.0;
+
+    // Score text pulse
+    this.scoreEl.classList.remove('hit');
+    this.scoreEl.classList.add('pulse');
+    setTimeout(() => this.scoreEl.classList.remove('pulse'), 150);
 
     // Show combo
     if (this.combo >= 3) {
@@ -137,42 +116,57 @@ export class Score {
       this.comboEl.classList.add('visible');
     }
 
-    // Floating popup
-    this._spawnPopup(`+${earned}`, false);
+    // Floating score number
+    this._spawnFloatingScore(`+${earned}`, earned >= 100 ? 'big' : 'normal');
   }
 
-  /** Break combo (missed something or hit obstacle) */
+  /** Spawn a floating score number that rises and fades */
+  _spawnFloatingScore(text, size) {
+    const el = document.createElement('div');
+    el.className = 'float-score ' + size;
+    el.textContent = text;
+    // Random horizontal offset so they don't stack
+    const xOff = (Math.random() - 0.5) * 120;
+    el.style.left = `calc(50% + ${xOff}px)`;
+    document.body.appendChild(el);
+    // Force reflow then animate
+    el.offsetHeight;
+    el.classList.add('go');
+    setTimeout(() => el.remove(), 1200);
+  }
+
+  /** Break combo — red flash on ball, lose points */
   breakCombo() {
-    if (this.combo > 0) {
-      this._spawnPopup('MISS', true);
-    }
+    const penalty = -50 - Math.min(this.combo * 10, 200); // bigger penalty if combo was high
+    this.value = Math.max(0, this.value + penalty);
+    this.hitFlash = 1.0;
+    this.scoreEl.classList.remove('pulse');
+    this.scoreEl.classList.add('hit');
+    setTimeout(() => this.scoreEl.classList.remove('hit'), 300);
+
+    // Show negative floating number
+    this._spawnFloatingScore(`${penalty}`, 'bad');
+
     this.combo = 0;
     this.comboEl.classList.remove('visible');
   }
 
-  /** Spawn a floating score popup at a semi-random position */
-  _spawnPopup(text, isHit) {
-    const popup = document.createElement('div');
-    popup.className = 'score-popup' + (isHit ? ' hit' : '');
-    popup.textContent = text;
-    // Random horizontal position near center-left of screen
-    const x = 15 + Math.random() * 25; // 15-40% from left
-    const y = 40 + Math.random() * 20; // 40-60% from top
-    popup.style.left = x + '%';
-    popup.style.top = y + '%';
-    this.popupContainer.appendChild(popup);
-    // Remove after animation
-    setTimeout(() => popup.remove(), 1300);
-  }
-
   /** Call every frame */
   update(dt) {
-    // Smooth score display
+    // Smooth score counter — rolls up fast then slows
     this.displayValue += (this.value - this.displayValue) * dt * 8;
     if (Math.abs(this.displayValue - this.value) < 1) this.displayValue = this.value;
 
     if (this.visible) {
       this.scoreEl.textContent = Math.round(this.displayValue).toLocaleString();
+    }
+
+    // Decay flash states
+    if (this.flash > 0) {
+      this.flash = Math.max(0, this.flash - dt * 4);
+    }
+    if (this.hitFlash > 0) {
+      this.hitFlash = Math.max(0, this.hitFlash - dt * 5);
     }
   }
 }
