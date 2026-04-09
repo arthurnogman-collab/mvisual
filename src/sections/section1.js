@@ -137,12 +137,7 @@ export class Section1 extends SectionBase {
 
     // Story
     ctx.story.clear();
-    ctx.story.schedule('...', 1, 3);
-    ctx.story.schedule('move to navigate', 5, 3);
-    ctx.story.schedule('follow the sacred path', 10, 4);
-    ctx.story.schedule('let go', 14, 3);
-    ctx.story.schedule('you are almost there', 18, 3, 'bright');
-    ctx.story.schedule('step into the light', 23, 3, 'bright');
+    ctx.story.schedule('FOLLOW THE SACRED PATH', 3, 5, 'bright');
 
     ctx.score.show();
 

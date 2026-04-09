@@ -90,6 +90,7 @@ export class Section3 extends SectionBase {
     this.lastFlyerIndex = -1;
     this.flyerObstacles = [];
     this._flyerTemplates = [];
+    this.spawnEffects = [];
 
     // Tree template data (with bbox centering info)
     this._treeTemplates = [];
@@ -140,6 +141,7 @@ export class Section3 extends SectionBase {
 
     this.lastFlyerIndex = -1;
     this.flyerObstacles = [];
+    this.spawnEffects = [];
 
     this._buildRoad(ctx);
     this._buildSky(ctx);
@@ -325,12 +327,39 @@ export class Section3 extends SectionBase {
   _spawnFlyerObstacle(note, songTime) {
     if (this._flyerTemplates.length === 0) return;
 
-    const SPAWN_AHEAD = 70;
+    const SPAWN_AHEAD = 80;
     const baseZ = -((songTime - 60) * this.scrollSpeed) - SPAWN_AHEAD;
     const ROAD_HALF = 5;
     const centerX = (Math.random() * 2 - 1) * ROAD_HALF;
-    const baseHeight = 4.0 + Math.random() * 3.0;
-    const flockSize = 1 + Math.floor(Math.random() * 3); // 1, 2, or 3
+    const baseHeight = 5.0 + Math.random() * 3.0;
+    const flockSize = 1 + Math.floor(Math.random() * 3);
+
+    // Spawn wave effect — colorful expanding rings at the spawn point
+    const waveColor = new THREE.Color().setHSL((note % 12) / 12, 0.9, 0.6);
+    for (let ri = 0; ri < 3; ri++) {
+      const ringGeo = new THREE.RingGeometry(0.2, 0.5, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: ri === 0 ? waveColor : new THREE.Color(0xffffff),
+        transparent: true,
+        opacity: 0.9,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.set(centerX, baseHeight, baseZ);
+      ring.lookAt(0, baseHeight, baseZ + 50);
+      this.roadGroup.add(ring);
+
+      this.spawnEffects.push({
+        mesh: ring,
+        baseZ,
+        life: 1.0,
+        maxLife: 1.0,
+        expandSpeed: 4 + ri * 3,
+        delay: ri * 0.08,
+        color: ri === 0 ? waveColor.clone() : new THREE.Color(0xffffff),
+      });
+    }
 
     for (let fi = 0; fi < flockSize; fi++) {
       const tplIdx = (note + fi) % this._flyerTemplates.length;
@@ -345,7 +374,7 @@ export class Section3 extends SectionBase {
             color: tpl.color,
             wireframe: true,
             transparent: true,
-            opacity: 0.85,
+            opacity: 0.0,
           });
         }
       });
@@ -376,6 +405,8 @@ export class Section3 extends SectionBase {
         model, mixer, z, x, flyHeight, ownSpeed,
         collected: false, hitFlash: 0,
         phase: Math.random() * Math.PI * 2,
+        spawnAge: 0,
+        baseColor: new THREE.Color(tpl.color),
       });
     }
   }
@@ -701,7 +732,31 @@ export class Section3 extends SectionBase {
       this.batMixer.update(dt);
     }
 
-    // ── Flying monster obstacles (Serum #2 melody) ──
+    // ── Spawn wave effects ──
+    for (let i = this.spawnEffects.length - 1; i >= 0; i--) {
+      const fx = this.spawnEffects[i];
+      fx.life -= dt;
+      if (fx.life <= 0) {
+        this.roadGroup.remove(fx.mesh);
+        fx.mesh.geometry.dispose();
+        fx.mesh.material.dispose();
+        this.spawnEffects.splice(i, 1);
+        continue;
+      }
+
+      fx.mesh.position.z = fx.baseZ + worldOffset;
+      const age = fx.maxLife - fx.life;
+      const t = Math.max(0, age - fx.delay) / (fx.maxLife - fx.delay);
+      const scale = 1 + t * fx.expandSpeed * 3;
+      fx.mesh.scale.set(scale, scale, 1);
+      fx.mesh.material.opacity = (1 - t) * 0.85;
+      const hShift = t * 0.3;
+      const hsl = { h: 0, s: 0, l: 0 };
+      fx.color.getHSL(hsl);
+      fx.mesh.material.color.setHSL((hsl.h + hShift) % 1, hsl.s, hsl.l + t * 0.3);
+    }
+
+    // ── Flying monster obstacles (Music box melody) ──
     for (let i = this.lastFlyerIndex + 1; i < this.flyerEvents.length; i++) {
       const [ft, note] = this.flyerEvents[i];
       if (songTime >= ft) {
@@ -714,6 +769,7 @@ export class Section3 extends SectionBase {
     const beatSin = Math.sin(beatPh * Math.PI * 2);
 
     for (const fo of this.flyerObstacles) {
+      fo.spawnAge += dt;
       fo.z += fo.ownSpeed * dt;
       const wz = fo.z + worldOffset;
       fo.model.position.z = wz;
@@ -725,6 +781,20 @@ export class Section3 extends SectionBase {
 
       fo.mixer.timeScale = 1.0 + beatSin * 0.2;
       fo.mixer.update(dt);
+
+      // Fade in during first 0.8 seconds after spawn
+      if (fo.spawnAge < 0.8 && fo.hitFlash <= 0) {
+        const fadeIn = Math.min(1, fo.spawnAge / 0.8);
+        const glow = Math.sin(fo.spawnAge * 12) * 0.3 + 0.7;
+        fo.model.traverse((child) => {
+          if (child.isMesh) {
+            child.material.opacity = fadeIn * 0.85;
+            child.material.color.lerpColors(
+              new THREE.Color(0xffffff), fo.baseColor, fadeIn * glow
+            );
+          }
+        });
+      }
 
       // Hit flash decay
       if (fo.hitFlash > 0) {
@@ -863,6 +933,13 @@ export class Section3 extends SectionBase {
     }
     this.flyerObstacles = [];
     this._flyerTemplates = [];
+
+    for (const fx of this.spawnEffects) {
+      this.roadGroup.remove(fx.mesh);
+      fx.mesh.geometry.dispose();
+      fx.mesh.material.dispose();
+    }
+    this.spawnEffects = [];
 
     this.roadGroup = null;
     super.exit(ctx);

@@ -58,6 +58,12 @@ export class Audio {
     return this.ctx.currentTime - this.startedAt;
   }
 
+  fadeOut(duration = 5) {
+    if (!this.gainNode || !this.ctx) return;
+    this.gainNode.gain.setValueAtTime(this.gainNode.gain.value, this.ctx.currentTime);
+    this.gainNode.gain.linearRampToValueAtTime(0, this.ctx.currentTime + duration);
+  }
+
   /** Call once per frame to refresh analyser data + energy bands */
   update() {
     if (!this.analyser) return;

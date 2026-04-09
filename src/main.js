@@ -15,7 +15,6 @@ import { Section2 } from './sections/section2.js';
 import { Section3 } from './sections/section3.js';
 import { Section4 } from './sections/section4.js';
 import { Section5 } from './sections/section5.js';
-import { Section6 } from './sections/section6.js';
 
 // ── Core setup ──────────────────────────────────────────────
 // 480p internal resolution — balance of performance + clarity
@@ -34,7 +33,7 @@ renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 200);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 800);
 camera.position.set(0, 2, 5);
 
 // ── Post-processing: Bloom ──────────────────────────────────
@@ -166,7 +165,6 @@ chain.add(new Section2());
 chain.add(new Section3());
 chain.add(new Section4());
 chain.add(new Section5());
-chain.add(new Section6());
 
 // Shared context passed to all sections
 const ctx = { scene, camera, renderer, composer, bloomPass, crtPass, player, audio, input, story, score };
@@ -196,7 +194,7 @@ overlay.addEventListener('click', async () => {
   // Skip to a specific time via URL param: ?t=0 starts from beginning
   const params = new URLSearchParams(window.location.search);
   const tParam = params.get('t');
-  const startAt = tParam !== null ? parseFloat(tParam) : 60;
+  const startAt = tParam !== null ? parseFloat(tParam) : 0;
   audio.play(startAt);
   loop();
 });

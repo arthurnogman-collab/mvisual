@@ -22,9 +22,12 @@ const ALL_MODELS = [
   '/models/environment/Flower Bushes.glb',
   '/models/environment/Grass.glb',
   '/models/environment/Rocks.glb',
+  '/models/environment/Palm Trees.glb',
   // Monsters / Characters
   '/models/monsters/Demon.glb',
+  '/models/monsters/Blue Demon.glb',
   '/models/monsters/Ninja-xGYmeDpfTu.glb',
+  '/models/monsters/Ninja.glb',
   '/models/monsters/Dragon.glb',
   '/models/monsters/Alien.glb',
   '/models/monsters/Orc.glb',

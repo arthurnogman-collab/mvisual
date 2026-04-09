@@ -14,7 +14,7 @@ export default defineConfig({
           let body = '';
           req.on('data', c => body += c);
           req.on('end', () => {
-            fs.writeFileSync('tree-debug.log', body, 'utf-8');
+            fs.appendFileSync('section4-debug.log', body + '\n', 'utf-8');
             res.writeHead(200);
             res.end('ok');
           });
