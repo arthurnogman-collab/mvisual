@@ -197,6 +197,16 @@ overlay.addEventListener('click', async () => {
   // Go fullscreen + lock pointer so mouse can't leave
   document.documentElement.requestFullscreen().catch(() => {});
   renderer.domElement.requestPointerLock().catch(() => {});
+  document.body.classList.add('locked');
+
+  // Toggle cursor visibility with pointer lock state
+  document.addEventListener('pointerlockchange', () => {
+    if (document.pointerLockElement) {
+      document.body.classList.add('locked');
+    } else {
+      document.body.classList.remove('locked');
+    }
+  });
 
   // Re-lock pointer if user clicks canvas after Escape
   renderer.domElement.addEventListener('click', () => {
