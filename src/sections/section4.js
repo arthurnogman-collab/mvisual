@@ -116,9 +116,9 @@ export class Section4 extends SectionBase {
     ctx.renderer.toneMappingExposure = 0.8;
 
     if (ctx.bloomPass) {
-      ctx.bloomPass.strength = 1.2;
-      ctx.bloomPass.radius = 0.5;
-      ctx.bloomPass.threshold = 0.25;
+      ctx.bloomPass.strength = 0.8;
+      ctx.bloomPass.radius = 0.15;
+      ctx.bloomPass.threshold = 0.45;
     }
     if (ctx.crtPass) {
       ctx.crtPass.uniforms.scanlineWeight.value = 0;
@@ -962,11 +962,11 @@ export class Section4 extends SectionBase {
       }
     }
 
-    // ── Bloom — glow in dark, moderate acid glow in day ──
+    // ── Bloom — tight glow, visible but not bleeding into colors ──
     if (ctx.bloomPass) {
-      ctx.bloomPass.strength = THREE.MathUtils.lerp(1.0, 0.5, p);
-      ctx.bloomPass.threshold = THREE.MathUtils.lerp(0.3, 0.4, p);
-      ctx.bloomPass.radius = THREE.MathUtils.lerp(0.4, 0.3, p);
+      ctx.bloomPass.strength = THREE.MathUtils.lerp(0.8, 0.5, p);
+      ctx.bloomPass.threshold = THREE.MathUtils.lerp(0.45, 0.55, p);
+      ctx.bloomPass.radius = THREE.MathUtils.lerp(0.15, 0.1, p);
     }
   }
 

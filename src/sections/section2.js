@@ -540,7 +540,7 @@ export class Section2 extends SectionBase {
     }
 
     // Left/right movement (analog mouse or keyboard)
-    const lateralSpeed = 4;
+    const lateralSpeed = 8;
     const move = ctx.input.moveAmount;
     if (move !== 0) {
       this.playerX = Math.max(-2, Math.min(2, (this.playerX || 0) + move * lateralSpeed * dt));
